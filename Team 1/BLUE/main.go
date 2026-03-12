@@ -15,7 +15,7 @@ import (
 // applyFilters sets the BPF rules to ignore SSH noise
 func applyFilters(handle *pcap.Handle) {
 	// Standard SSH is 22; VirtualBox often uses 2222 for port forwarding
-	filter := "not port 22 and not port 2222 and not dst host 192.168.56.255"
+	filter := "not port 22 and not port 2222 and not dst host 192.168.56.255 and not host 192.168.56.100"
 	err := handle.SetBPFFilter(filter)
 	if err != nil {
 		log.Fatalf("Error applying BPF filter: %v", err)
