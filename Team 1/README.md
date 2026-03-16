@@ -97,7 +97,7 @@ Now, you need to get the code and sync the dependencies.
 #### Clone the Repository:
 
     git clone <your-github-url-here>
-    cd "IntrusionDetectionSystem/Team 1/BLUE"
+    cd "IntrusionDetectionSystem/Team\ 1/BLUE"
 
 #### Sync the Go Modules:
 
@@ -135,7 +135,7 @@ Run this in the Kali VM window:
 Download the project:
 
     git clone <your-github-url-here>
-    cd "IntrusionDetectionSystem/Team 1/RED"
+    cd "IntrusionDetectionSystem/Team\ 1/RED"
 ## 2. Connect from your Laptop
 Find your IP (usually on eth1) with ip a, then connect on your local terminal:
 
@@ -148,7 +148,7 @@ Once both environments are configured and you are SSH'd into both machines, foll
 ## 1. Start the Defender (Ubuntu)
 Navigate to your BLUE folder and start the Go application. It must stay running to capture the incoming packets.
 
-    cd "IntrusionDetectionSystem/Team 1/BLUE"
+    cd "IntrusionDetectionSystem/Team\ 1/BLUE"
     sudo go run main.go
 
 Verify that you see the message: ` GoGuard: Monitoring enp0s8. Waiting for packets...` 
@@ -162,9 +162,9 @@ Locate the address for `enp0s8` (e.g., 192.168.56.105).
 ## 3. Launch the Attack (Kali)
 In your Kali terminal, navigate to the RED folder and execute the Python script. You must pass the Ubuntu IP you found in the previous step as a command-line argument.
 
-    cd "IntrusionDetectionSystem/Team 1/RED"
-    python3 attacker.py <TARGET_UBUNTU_IP>
-Example:   `python3 attacker.py 192.168.56.105`
+    cd "IntrusionDetectionSystem/Team\ 1/RED"
+    python3 orchestrator.py <TARGET_UBUNTU_IP>
+Example:   `python3 orchestrator.py 192.168.56.105`
 
 ## 4.Confirm Detection
 Switch back to your Ubuntu terminal. You should see several lines of output appearing in real-time as the pings arrive:
