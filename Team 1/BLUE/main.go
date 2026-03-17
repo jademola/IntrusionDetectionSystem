@@ -8,8 +8,6 @@ import (
 	"time"
 	// for logging
 	"os"
-	"bufio"
-	"path/filepath"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers" //To read IP layers
@@ -32,7 +30,7 @@ func main() {
 	fmt.Println("GoGuard IPS: Defender Node is starting...")
 	fmt.Println("Interface: enp0s8 (Target)")
 
-	device := "enp0s8"
+	device := "enp0s9" // may need to set dependent on your own machine
 	snapshotLen := int32(1024)
 	promiscuous := false
 	timeout := 30 * time.Second
@@ -68,7 +66,7 @@ func main() {
 
 			// Get a human-readable timestamp
 			timestamp := time.Now().Format("15:04:05")
-			dateTime := now.Format("2006-01-02 15:04:05")
+			dateTime := time.Now().Format("2006-01-02 15:04:05")
 
 			// The "Detection" Output
 			fmt.Printf("[%s] Detection: %s --> %s | Proto: %s\n",
@@ -87,7 +85,7 @@ func main() {
 		
 			log := fmt.Sprintf("logs/log_%s", dateTime)
 
-			err := os.writeFile(log, []byte(logPacketInfo), 0644
+			err := os.WriteFile(log, []byte(logPacketInfo), 0644)
 			if err != nil {
 				panic(err)
 			}
