@@ -48,6 +48,7 @@ func detectFlooding() {
 
 	for range ticker.C {
 		totalRate := atomic.SwapUint64(&totalPackets, 0)
+		logHighRate, logIP := ""
 
 		if totalRate  > 5000 {
 			logHighRate := fmt.Sprintf("!!! High Total Rate Detected: %d packets/per sec\n", totalRate)
