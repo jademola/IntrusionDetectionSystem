@@ -55,6 +55,16 @@ func main() {
 	// Use the handle as a packet source - translates binary into readable packet
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 
+	dateTime := time.Now().Format("2006-01-02 15:04:05")
+	logName := fmt.Sprintf("log_%s", dateTime)
+
+	f, err := os.openFile(logName,os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		panic(err)
+	}
+
+	defer f.Close()
+
 	//Loop through packets
 	for packet := range packetSource.Packets() {
 		//Look for the IP layer in this packet
@@ -66,7 +76,6 @@ func main() {
 
 			// Get a human-readable timestamp
 			timestamp := time.Now().Format("15:04:05")
-			dateTime := time.Now().Format("2006-01-02 15:04:05")
 
 			// The "Detection" Output
 			fmt.Printf("[%s] Detection: %s --> %s | Proto: %s\n",
@@ -84,7 +93,7 @@ func main() {
 			)
 		
 
-			err := os.WriteFile(log, []byte(logPacketInfo), 0644)
+			_, err := f.WriteString(logPacketInfo)
 			if err != nil {
 				panic(err)
 			}
