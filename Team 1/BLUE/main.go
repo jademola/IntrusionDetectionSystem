@@ -56,9 +56,9 @@ func main() {
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 
 	dateTime := time.Now().Format("2006-01-02 15:04:05")
-	logName := fmt.Sprintf("log_%s", dateTime)
+	logName := fmt.Sprintf("logs/log_%s", dateTime)
 
-	f, err := os.openFile(logName,os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(logName,os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		panic(err)
 	}
