@@ -107,12 +107,13 @@ func main() {
 		if ipLayer != nil {
 			atomic.AddUint64(&totalPackets, 1)
 
-			// per-IP tracking
+
+			ip, _ := ipLayer.(*layers.IPv4)
+
+			//perIP tracking
 			src := ip.SrcIP.String()
 			val, _ := perIP.LoadOrStore(src, new(uint64))
 			atomic.AddUint64(val.(*uint64), 1)
-			
-			ip, _ := ipLayer.(*layers.IPv4)
 
 			// Get a human-readable timestamp
 			timestamp := time.Now().Format("15:04:05.999999")
