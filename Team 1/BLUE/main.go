@@ -8,6 +8,9 @@ import (
 	"time"
 	// for logging
 	"os"
+	// for nmap counts
+	"sync"
+	"sync/atomic"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers" //To read IP layers
@@ -23,6 +26,34 @@ func applyFilters(handle *pcap.Handle) {
 		log.Fatalf("Error applying BPF filter: %v", err)
 	}
 	fmt.Println("Network filters active: Ignoring SSH management traffic and Broadcast Noise.")
+}
+
+var totalPackets uint64
+var perIP sync.Map // map[string]*uint64
+
+
+func detectFlooding() {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		totalRate := atomic.SwapUint64(&totalPackets, 0)
+
+		if totalRate  > 5000 {
+			fmt.Printf("!!! High Total Rate Detected: %d packets/per sec\n", totalRate)
+		}
+
+		perIP.Range(func(key, value any) bool {
+			ip := key.(string)
+			count := atomic.SwapUint64(value.(*uint64), 0)
+
+			// test for nmap resulted in 1700+ packets sent and received
+			if count > 1000 {
+				fmt.Printf("!!! Possible packet flooding from %s: %d packets/per sec\n", ip, count)
+			}
+			return true
+		})
+	}
 }
 
 // 3. The Main Function (The entry point)
@@ -65,6 +96,8 @@ func main() {
 
 	defer f.Close()
 
+	go detectFlooding()
+
 	//Loop through packets
 	for packet := range packetSource.Packets() {
 		//Look for the IP layer in this packet
@@ -72,10 +105,17 @@ func main() {
 
 		//Convert generic ipLayer into IPv4 object to read the source, destination and protocol
 		if ipLayer != nil {
+			atomic.AddUint64(&totalPackets, 1)
+
+			// per-IP tracking
+			src := ip.SrcIP.String()
+			val, _ := perIP.LoadOrStore(src, new(uint64))
+			atomic.AddUint64(val.(*uint64), 1)
+			
 			ip, _ := ipLayer.(*layers.IPv4)
 
 			// Get a human-readable timestamp
-			timestamp := time.Now().Format("15:04:05")
+			timestamp := time.Now().Format("15:04:05.999999")
 
 			// The "Detection" Output
 			fmt.Printf("[%s] Detection: %s --> %s | Proto: %s\n",
