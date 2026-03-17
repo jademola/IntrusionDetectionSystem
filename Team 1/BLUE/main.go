@@ -48,7 +48,7 @@ func detectFlooding() {
 			count := atomic.SwapUint64(value.(*uint64), 0)
 
 			// test for nmap resulted in 1700+ packets sent and received
-			if count > 1000 {
+			if count > 500 {
 				fmt.Printf("!!! Possible packet flooding from %s: %d packets/per sec\n", ip, count)
 			}
 			return true
