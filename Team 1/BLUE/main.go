@@ -6,6 +6,10 @@ import (
 	"fmt" //printing to console
 	"log"
 	"time"
+	// for logging
+	"os"
+	"bufio"
+	"path/filepath"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers" //To read IP layers
@@ -64,6 +68,7 @@ func main() {
 
 			// Get a human-readable timestamp
 			timestamp := time.Now().Format("15:04:05")
+			dateTime := now.Format("2006-01-02 15:04:05")
 
 			// The "Detection" Output
 			fmt.Printf("[%s] Detection: %s --> %s | Proto: %s\n",
@@ -72,6 +77,21 @@ func main() {
 				ip.DstIP,
 				ip.Protocol,
 			)
+
+			logPacketInfo := fmt.Sprintf("[%s] Detection: %s --> %s | Proto: %s\n",
+				timestamp,
+				ip.SrcIP,
+				ip.DstIP,
+				ip.Protocol,
+			)
+		
+			log := fmt.Sprintf("logs/log_%s", dateTime)
+
+			err := os.writeFile(log, []byte(logPacketInfo), 0644
+			if err != nil {
+				panic(err)
+			}
+
 
 		}
 
