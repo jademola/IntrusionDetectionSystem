@@ -36,11 +36,21 @@ func detectFlooding() {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
+	dateTime := time.Now().Format("2006-01-02 15:04:05")
+	logName := fmt.Sprintf("flags/log_%s", dateTime)
+
+	f, err := os.OpenFile(logName,os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		panic(err)
+	}
+
+	defer f.Close()
+
 	for range ticker.C {
 		totalRate := atomic.SwapUint64(&totalPackets, 0)
 
 		if totalRate  > 5000 {
-			fmt.Printf("!!! High Total Rate Detected: %d packets/per sec\n", totalRate)
+			logHighRate := fmt.Sprintf("!!! High Total Rate Detected: %d packets/per sec\n", totalRate)
 		}
 
 		perIP.Range(func(key, value any) bool {
@@ -49,10 +59,20 @@ func detectFlooding() {
 
 			// test for nmap resulted in 1700+ packets sent and received
 			if count > 500 {
-				fmt.Printf("!!! Possible packet flooding from %s: %d packets/per sec\n", ip, count)
+				logIP := fmt.Sprintf("!!! Possible packet flooding from %s: %d packets/per sec\n", ip, count)
 			}
 			return true
 		})
+
+		_, err := f.WriteString(logHighRate)
+			if err != nil {
+				panic(err)
+			}
+
+		_, err := f.WriteString(logIP)
+			if err != nil {
+				panic(err)
+			}
 	}
 }
 
