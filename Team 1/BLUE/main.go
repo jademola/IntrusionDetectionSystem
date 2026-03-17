@@ -51,7 +51,7 @@ func detectFlooding() {
 		logHighRate, logIP := "", ""
 
 		if totalRate  > 5000 {
-			logHighRate := fmt.Sprintf("!!! High Total Rate Detected: %d packets/per sec\n", totalRate)
+			logHighRate = fmt.Sprintf("!!! High Total Rate Detected: %d packets/per sec\n", totalRate)
 		}
 
 		perIP.Range(func(key, value any) bool {
@@ -60,20 +60,17 @@ func detectFlooding() {
 
 			// test for nmap resulted in 1700+ packets sent and received
 			if count > 500 {
-				logIP := fmt.Sprintf("!!! Possible packet flooding from %s: %d packets/per sec\n", ip, count)
+				logIP += fmt.Sprintf("!!! Possible packet flooding from %s: %d packets/per sec\n", ip, count)
 			}
 			return true
 		})
 
-		_, err := f.WriteString(logHighRate)
-			if err != nil {
-				panic(err)
-			}
-
-		_, err := f.WriteString(logIP)
-			if err != nil {
-				panic(err)
-			}
+		if logHighRate != "" {
+			f.WriteString(logHighRate)
+		}
+		if logIP != "" {
+			f.WriteString(logIP)
+		}
 	}
 }
 
