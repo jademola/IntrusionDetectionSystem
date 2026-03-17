@@ -83,7 +83,6 @@ func main() {
 				ip.Protocol,
 			)
 		
-			log := fmt.Sprintf("logs/log_%s", dateTime)
 
 			err := os.WriteFile(log, []byte(logPacketInfo), 0644)
 			if err != nil {
