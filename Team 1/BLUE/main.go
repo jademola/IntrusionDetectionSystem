@@ -94,7 +94,7 @@ func detectFlooding() {
 				logIP += fmt.Sprintf("!!! Possible packet flooding from %s: %d packets/per sec\n", ip, count)
 
 				//add IP to blacklist
-				expiration := time.Now().Add(60 * time.Hour)
+				expiration := time.Now().Add(60 * time.Second)
 				blacklist.Store(ip, expiration)
 			}
 			return true
