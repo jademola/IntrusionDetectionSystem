@@ -121,8 +121,8 @@ func main() {
 
 	device := "enp0s8" // may need to set dependent on your own machine
 	snapshotLen := int32(1024)
-	promiscuous := false
-	timeout := 30 * time.Second
+	promiscuous := true
+	timeout := 100 * time.Millisecond
 
 	//open device for packet sniffing (local host network, packetsize, promiscuous mode, )
 	handle, err := pcap.OpenLive(device, snapshotLen, promiscuous, timeout)
