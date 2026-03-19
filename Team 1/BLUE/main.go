@@ -123,6 +123,7 @@ func main() {
 	snapshotLen := int32(1024)
 	promiscuous := true
 	timeout := 100 * time.Millisecond
+	dstIP := "192.168.56.102" //Change to your Ubuntu IP
 
 	//open device for packet sniffing (local host network, packetsize, promiscuous mode, )
 	handle, err := pcap.OpenLive(device, snapshotLen, promiscuous, timeout)
@@ -189,11 +190,12 @@ func main() {
 			atomic.AddUint64(val.(*uint64), 1)
 
 			//check if packet has app layer and inspect it
-			appLayer := packet.ApplicationLayer()
-			if appLayer != nil {
-				inspectPayload(src, appLayer.Payload(), f)
+			if ip.DstIP.String() == dstIP {
+				appLayer := packet.ApplicationLayer()
+				if appLayer != nil {
+					inspectPayload(src, appLayer.Payload(), f)
+				}
 			}
-
 			// Get a human-readable timestamp
 			timestamp := time.Now().Format("15:04:05.999999")
 
