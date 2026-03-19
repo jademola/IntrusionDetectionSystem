@@ -5,7 +5,9 @@ package main
 import (
 	"fmt" //printing to console
 	"log"
+	"strings"
 	"time"
+
 	// for logging
 	"os"
 	// for nmap counts
@@ -16,6 +18,18 @@ import (
 	"github.com/google/gopacket/layers" //To read IP layers
 	"github.com/google/gopacket/pcap"
 )
+
+var totalPackets uint64
+var perIP sync.Map // map[string]*uint64
+var blacklist sync.Map
+
+// Dangerous keywords used in packet inspection
+var dangerZone = []string{
+	"SELECT", "DROP", "UNION", "INSERT", // SQL Injection
+	"<script>", "alert(", // XSS
+	"/etc/passwd", "/etc/shadow", //Linux System File Access
+	"admin", "password", "login", // Credential Hunting
+}
 
 // applyFilters sets the BPF rules to ignore SSH noise
 func applyFilters(handle *pcap.Handle) {
@@ -28,29 +42,46 @@ func applyFilters(handle *pcap.Handle) {
 	fmt.Println("Network filters active: Ignoring SSH management traffic and Broadcast Noise.")
 }
 
-var totalPackets uint64
-var perIP sync.Map // map[string]*uint64
+func inspectPayload(src string, data []byte, logFile *os.File) {
+	//Convert binary payload to string for searching
+	payload := string(data)
+	upperPayload := strings.ToUpper(payload)
 
+	for _, keyword := range dangerZone {
+		if strings.Contains(upperPayload, strings.ToUpper(keyword)) {
+			timestamp := time.Now().Format("15:04:05.999999")
+			alertMsg := fmt.Sprintf("[%s] !!! DPI ALERT: Keyword '%s' detected from %s\n", timestamp, keyword, src)
+
+			//Print alert
+			fmt.Print(alertMsg)
+
+			// Write to main log
+			if logFile != nil {
+				logFile.WriteString(alertMsg)
+			}
+
+			//Exit on first detection
+			break
+		}
+	}
+
+}
 
 func detectFlooding() {
+	// Make flag directory if not present
+	_ = os.MkdirAll("flags", 0755)
+
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
-	dateTime := time.Now().Format("2006-01-02 15:04:05")
+	dateTime := time.Now().Format("2006-01-02_15-04-05")
 	logName := fmt.Sprintf("flags/log_%s", dateTime)
-
-	f, err := os.OpenFile(logName,os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		panic(err)
-	}
-
-	defer f.Close()
 
 	for range ticker.C {
 		totalRate := atomic.SwapUint64(&totalPackets, 0)
 		logHighRate, logIP := "", ""
 
-		if totalRate  > 5000 {
+		if totalRate > 5000 {
 			logHighRate = fmt.Sprintf("!!! High Total Rate Detected: %d packets/per sec\n", totalRate)
 		}
 
@@ -61,15 +92,24 @@ func detectFlooding() {
 			// test for nmap resulted in 1700+ packets sent and received
 			if count > 500 {
 				logIP += fmt.Sprintf("!!! Possible packet flooding from %s: %d packets/per sec\n", ip, count)
+
+				//add IP to blacklist
+				expiration := time.Now().Add(60 * time.Hour)
+				blacklist.Store(ip, expiration)
 			}
 			return true
 		})
 
-		if logHighRate != "" {
-			f.WriteString(logHighRate)
-		}
-		if logIP != "" {
-			f.WriteString(logIP)
+		// Only open the file if we actually have something to report
+		if logHighRate != "" || logIP != "" {
+			f, err := os.OpenFile(logName, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			if err == nil {
+				f.WriteString(logHighRate)
+				f.WriteString(logIP)
+				f.Close()              // Close immediately so the data is saved
+				fmt.Print(logHighRate) // Also print to terminal so you see it live
+				fmt.Print(logIP)
+			}
 		}
 	}
 }
@@ -104,16 +144,17 @@ func main() {
 	// Use the handle as a packet source - translates binary into readable packet
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 
-	dateTime := time.Now().Format("2006-01-02 15:04:05")
+	dateTime := time.Now().Format("2006-01-02_15-04-05")
 	logName := fmt.Sprintf("logs/log_%s", dateTime)
 
-	f, err := os.OpenFile(logName,os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(logName, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		panic(err)
 	}
 
 	defer f.Close()
 
+	//Flood defense
 	go detectFlooding()
 
 	//Loop through packets
@@ -125,13 +166,33 @@ func main() {
 		if ipLayer != nil {
 			atomic.AddUint64(&totalPackets, 1)
 
-
 			ip, _ := ipLayer.(*layers.IPv4)
 
 			//perIP tracking
 			src := ip.SrcIP.String()
 			val, _ := perIP.LoadOrStore(src, new(uint64))
+
+			//check blacklist to see if IP is present
+			if val, banned := blacklist.Load(src); banned {
+				expiration := val.(time.Time)
+				if time.Now().Before(expiration) {
+					// Still banned
+					fmt.Printf("Packet Dropped from %s (Banned until %s)\n", src, expiration.Format("15:04:05"))
+					continue
+				} else {
+					// Ban expired! Lift the restriction
+					blacklist.Delete(src)
+					fmt.Printf("Timeout Expired for %s. Re-enabling access.\n", src)
+				}
+			}
+
 			atomic.AddUint64(val.(*uint64), 1)
+
+			//check if packet has app layer and inspect it
+			appLayer := packet.ApplicationLayer()
+			if appLayer != nil {
+				inspectPayload(src, appLayer.Payload(), f)
+			}
 
 			// Get a human-readable timestamp
 			timestamp := time.Now().Format("15:04:05.999999")
@@ -150,13 +211,11 @@ func main() {
 				ip.DstIP,
 				ip.Protocol,
 			)
-		
 
 			_, err := f.WriteString(logPacketInfo)
 			if err != nil {
 				panic(err)
 			}
-
 
 		}
 
