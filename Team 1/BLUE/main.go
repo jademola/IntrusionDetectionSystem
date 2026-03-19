@@ -119,7 +119,7 @@ func main() {
 	fmt.Println("GoGuard IPS: Defender Node is starting...")
 	fmt.Println("Interface: enp0s8 (Target)")
 
-	device := "enp0s9" // may need to set dependent on your own machine
+	device := "enp0s8" // may need to set dependent on your own machine
 	snapshotLen := int32(1024)
 	promiscuous := false
 	timeout := 30 * time.Second
