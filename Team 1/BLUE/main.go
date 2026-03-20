@@ -58,6 +58,15 @@ func inspectPayload(src string, data []byte, logFile *os.File) {
 			//Print alert
 			fmt.Print(alertMsg)
 
+			//Create alert and send it to dashboard
+			payloadAlert := Alert{
+				Timestamp: time.Now().Format("15:04:05"),
+				Source:    src,
+				Message:   fmt.Sprintf("Keyword '%s' detected", keyword),
+				Type:      "DPI",
+			}
+			broadcast <- payloadAlert
+
 			// Write to main log
 			if logFile != nil {
 				logFile.WriteString(alertMsg)
@@ -95,6 +104,16 @@ func detectFlooding() {
 			// test for nmap resulted in 1700+ packets sent and received
 			if count > 500 {
 				logIP += fmt.Sprintf("!!! Possible packet flooding from %s: %d packets/per sec\n", ip, count)
+
+				//Create alert and send it to dashboard
+				floodAlert := Alert{
+					Timestamp: time.Now().Format("15:04:05"),
+					Source:    ip,
+					Message:   fmt.Sprintf("Flooding detected: %d pkts/sec", count),
+					Type:      "FLOOD",
+				}
+
+				broadcast <- floodAlert
 
 				//add IP to blacklist
 				expiration := time.Now().Add(60 * time.Second)
@@ -158,6 +177,8 @@ func main() {
 
 	defer f.Close()
 
+	//Dashboard start
+	StartDashboard()
 	//Flood defense
 	go detectFlooding()
 

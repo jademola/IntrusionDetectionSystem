@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>GoGuard SOC Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #121212; color: #e0e0e0; margin: 0; padding: 20px; }
+        .header { border-bottom: 2px solid #333; padding-bottom: 10px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }
+        .grid { display: grid; grid-template-columns: 1fr 350px; gap: 20px; }
+        .card { background: #1e1e1e; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); border: 1px solid #333; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th { text-align: left; color: #888; border-bottom: 1px solid #333; padding: 10px; }
+        td { padding: 12px 10px; border-bottom: 1px solid #222; font-family: monospace; }
+        .type-DPI { color: #ff5252; font-weight: bold; background: rgba(255, 82, 82, 0.1); padding: 2px 6px; border-radius: 4px; }
+        .type-FLOOD { color: #ffab40; font-weight: bold; background: rgba(255, 171, 64, 0.1); padding: 2px 6px; border-radius: 4px; }
+        .status-online { color: #4caf50; font-size: 0.9em; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>GoGuard SOC <span style="color: #4da6ff;">Defender Node</span></h1>
+        <div class="status-online" id="status">● System Live</div>
+    </div>
+
+    <div class="grid">
+        <div class="card">
+            <h2 style="margin-top:0;">Real-Time Threat Feed</h2>
+            <table id="alertTable">
+                <thead>
+                    <tr>
+                        <th style="width: 15%;">Time</th>
+                        <th style="width: 25%;">Source IP</th>
+                        <th>Alert Description</th>
+                        <th style="width: 15%;">Type</th>
+                    </tr>
+                </thead>
+                <tbody id="alertBody">
+                    </tbody>
+            </table>
+        </div>
+
+        <div class="card">
+            <h2 style="margin-top:0;">Traffic Pulse</h2>
+            <canvas id="trafficChart"></canvas>
+            <p style="font-size: 0.8em; color: #666; margin-top: 15px;">Monitoring enp0s8 interface for anomalies...</p>
+        </div>
+    </div>
+
+    <script>
+        // Setup WebSocket connection
+        const socket = new WebSocket("ws://" + window.location.host + "/ws");
+        
+        socket.onopen = () => console.log("Connected to GoGuard Engine");
+        socket.onclose = () => document.getElementById('status').innerHTML = "● System Offline";
+
+        socket.onmessage = function(event) {
+            const alert = JSON.parse(event.data);
+            addAlertToTable(alert);
+            updateChart(); // Trigger visual spike
+        };
+
+        function addAlertToTable(alert) {
+            const tbody = document.getElementById("alertBody");
+            const row = tbody.insertRow(0);
+            row.style.animation = "fadeIn 0.5s";
+            row.innerHTML = `
+                <td>${alert.timestamp}</td>
+                <td>${alert.source}</td>
+                <td>${alert.message}</td>
+                <td><span class="type-${alert.type}">${alert.type}</span></td>
+            `;
+            if (tbody.rows.length > 10) tbody.deleteRow(10);
+        }
+
+        // Simple Chart Setup
+        const ctx = document.getElementById('trafficChart').getContext('2d');
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: Array(10).fill(''),
+                datasets: [{
+                    label: 'Anomalies Detected',
+                    data: Array(10).fill(0),
+                    borderColor: '#4da6ff',
+                    backgroundColor: 'rgba(77, 166, 255, 0.2)',
+                    fill: true,
+                    tension: 0.4
+                }]
+            },
+            options: { 
+                responsive: true,
+                scales: { y: { display: false }, x: { display: false } },
+                plugins: { legend: { display: false } }
+            }
+        });
+
+        function updateChart() {
+            chart.data.datasets[0].data.push(Math.floor(Math.random() * 10) + 5);
+            chart.data.datasets[0].data.shift();
+            chart.update();
+        }
+    </script>
+</body>
+</html>
