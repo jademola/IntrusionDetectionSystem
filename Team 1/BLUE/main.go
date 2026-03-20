@@ -128,6 +128,14 @@ func detectFlooding() {
 				//add IP to blacklist
 				expiration := time.Now().Add(60 * time.Second)
 				blacklist.Store(ip, expiration)
+
+				//Send alert to dashboard with banned IP
+				broadcast <- Alert{
+					Timestamp: expiration.Format("15:04:05"), // Use expiration time
+					Source:    ip,
+					Message:   "IP Blacklisted",
+					Type:      "BAN",
+				}
 			}
 			return true
 		})
@@ -218,6 +226,12 @@ func main() {
 					// Ban expired! Lift the restriction
 					blacklist.Delete(src)
 					fmt.Printf("Timeout Expired for %s. Re-enabling access.\n", src)
+
+					//Send unbanned alert to Dashboard
+					broadcast <- Alert{
+						Source: src,
+						Type:   "UNBAN",
+					}
 				}
 			}
 

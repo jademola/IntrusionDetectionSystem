@@ -81,22 +81,34 @@
 
         // Simple Chart Setup
         const ctx = document.getElementById('trafficChart').getContext('2d');
+        // Change from 10 to 60 (this represents 60 seconds of history if sampling at 1s)
+        const chartHistory = 60; 
+
         const chart = new Chart(ctx, {
             type: 'line',
             data: {
-                labels: Array(10).fill(''),
+                labels: Array(chartHistory).fill(''), 
                 datasets: [{
                     label: 'Packets Per Second',
-                    data: Array(10).fill(0),
+                    data: Array(chartHistory).fill(0),
                     borderColor: '#4da6ff',
-                    backgroundColor: 'rgba(77, 166, 255, 0.2)',
+                    backgroundColor: 'rgba(77, 166, 255, 0.1)', // Slightly lighter fill
                     fill: true,
-                    tension: 0.4
+                    tension: 0.4, // Keep this for the smooth "wave" look
+                    pointRadius: 0 // Hide dots for a cleaner "high-res" line
                 }]
             },
             options: { 
                 responsive: true,
-                scales: { y: { display: false }, x: { display: false } },
+                maintainAspectRatio: false,
+                animation: false, // CRITICAL: Disable animation for high-frequency updates
+                scales: { 
+                    y: { 
+                        beginAtZero: true,
+                        grid: { color: '#222' } 
+                    }, 
+                    x: { display: false } 
+                },
                 plugins: { legend: { display: false } }
             }
         });
@@ -135,11 +147,22 @@
         }
 
         function updateChart(count) {
+            // Add the new data point
             chart.data.datasets[0].data.push(count);
-            chart.data.datasets[0].data.shift();
+            
+            // Remove the oldest point to keep the window at 60
+            if (chart.data.datasets[0].data.length > chartHistory) {
+                chart.data.datasets[0].data.shift();
+            }
+
+            // Optional: Add a timestamp label for the X-axis (even if hidden)
             chart.data.labels.push(new Date().toLocaleTimeString());
-            chart.data.labels.shift();
-            chart.update('none'); // 'none' prevents the chart from lagging during high speed
+            if (chart.data.labels.length > chartHistory) {
+                chart.data.labels.shift();
+            }
+
+            // Use 'none' to render instantly without transition lag
+            chart.update('none'); 
         }
     </script>
 </body>
