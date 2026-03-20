@@ -33,13 +33,16 @@ var dangerZone = []string{
 
 // applyFilters sets the BPF rules to ignore SSH noise
 func applyFilters(handle *pcap.Handle) {
-	// Standard SSH is 22; VirtualBox often uses 2222 for port forwarding
-	filter := "not port 22 and not port 2222 and not dst host 192.168.56.255 and not host 192.168.56.100"
+	// 1. "not port 22 and not port 2222" -> Ignores SSH
+	// 2. "not host 192.168.56.1" -> Ignores all traffic FROM or TO your Windows/Mac host
+	// 3. "not net 224.0.0.0/4" -> Ignores ALL Multicast traffic (SSDP, mDNS, etc.)
+	filter := "not port 22 and not port 2222 and not host 192.168.56.1 and not net 224.0.0.0/4"
+
 	err := handle.SetBPFFilter(filter)
 	if err != nil {
 		log.Fatalf("Error applying BPF filter: %v", err)
 	}
-	fmt.Println("Network filters active: Ignoring SSH management traffic and Broadcast Noise.")
+	fmt.Println("Network filters active: SSH, Host Noise, and Multicast ignored.")
 }
 
 func inspectPayload(src string, data []byte, logFile *os.File) {
