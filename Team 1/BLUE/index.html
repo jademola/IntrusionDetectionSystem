@@ -53,11 +53,6 @@
         socket.onopen = () => console.log("Connected to GoGuard Engine");
         socket.onclose = () => document.getElementById('status').innerHTML = "● System Offline";
 
-        socket.onmessage = function(event) {
-            const alert = JSON.parse(event.data);
-            addAlertToTable(alert);
-            updateChart(); // Trigger visual spike
-        };
 
         function addAlertToTable(alert) {
             const tbody = document.getElementById("alertBody");
@@ -94,10 +89,25 @@
             }
         });
 
-        function updateChart() {
-            chart.data.datasets[0].data.push(Math.floor(Math.random() * 10) + 5);
+        socket.onmessage = function(event) {
+            const alert = JSON.parse(event.data);
+            
+            if (alert.type === "PULSE") {
+                // If it's a pulse, update the chart with the real number
+                const packetCount = parseInt(alert.message);
+                updateChart(packetCount);
+            } else {
+                // If it's a threat (DPI or FLOOD), add it to the table
+                addAlertToTable(alert);
+            }
+        };
+
+        function updateChart(count) {
+            chart.data.datasets[0].data.push(count);
             chart.data.datasets[0].data.shift();
-            chart.update();
+            chart.data.labels.push(new Date().toLocaleTimeString());
+            chart.data.labels.shift();
+            chart.update('none'); // 'none' prevents the chart from lagging during high speed
         }
     </script>
 </body>

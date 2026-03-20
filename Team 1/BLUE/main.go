@@ -89,9 +89,19 @@ func detectFlooding() {
 	dateTime := time.Now().Format("2006-01-02_15-04-05")
 	logName := fmt.Sprintf("flags/log_%s", dateTime)
 
+	//broadcasts the packet count to dashboard
 	for range ticker.C {
 		totalRate := atomic.SwapUint64(&totalPackets, 0)
 		logHighRate, logIP := "", ""
+
+		pulseAlert := Alert{
+			Timestamp: time.Now().Format("15:04:05"),
+			Source:    "System",
+			Message:   fmt.Sprintf("%d", totalRate),
+			Type:      "PULSE",
+		}
+
+		broadcast <- pulseAlert
 
 		if totalRate > 5000 {
 			logHighRate = fmt.Sprintf("!!! High Total Rate Detected: %d packets/per sec\n", totalRate)
