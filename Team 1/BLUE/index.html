@@ -40,9 +40,9 @@
         </div>
 
         <div class="card">
-            <h2 style="margin-top:0;">Traffic Pulse</h2>
+            <h2 style="margin-top:0;">Traffic Throughput</h2>
             <canvas id="trafficChart"></canvas>
-            <p style="font-size: 0.8em; color: #666; margin-top: 15px;">Monitoring enp0s8 interface for anomalies...</p>
+            <p style="font-size: 0.8em; color: #666; margin-top: 15px;">Monitoring enp0s8 interface for threats...</p>
         </div>
     </div>
 
@@ -74,7 +74,7 @@
             data: {
                 labels: Array(10).fill(''),
                 datasets: [{
-                    label: 'Anomalies Detected',
+                    label: 'Packets Per Second',
                     data: Array(10).fill(0),
                     borderColor: '#4da6ff',
                     backgroundColor: 'rgba(77, 166, 255, 0.2)',
