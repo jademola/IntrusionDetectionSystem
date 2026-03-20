@@ -6,7 +6,9 @@
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #121212; color: #e0e0e0; margin: 0; padding: 20px; }
         .header { border-bottom: 2px solid #333; padding-bottom: 10px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }
-        .grid { display: grid; grid-template-columns: 1fr 350px; gap: 20px; }
+        .grid { display: grid; grid-template-columns: 350px 1fr; /* Threat feed on left (small), Chart on right (wide) */ gap: 20px; }
+        canvas {width: 100% !important;height: 400px !important; }
+        .side-panel {display: flex;flex-direction: column;gap: 20px;}
         .card { background: #1e1e1e; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); border: 1px solid #333; }
         table { width: 100%; border-collapse: collapse; margin-top: 10px; }
         th { text-align: left; color: #888; border-bottom: 1px solid #333; padding: 10px; }
@@ -23,28 +25,40 @@
     </div>
 
     <div class="grid">
+    <div class="side-panel">
         <div class="card">
-            <h2 style="margin-top:0;">Real-Time Threat Feed</h2>
+            <h2 style="margin-top:0;">Live Threat Feed</h2>
             <table id="alertTable">
                 <thead>
                     <tr>
-                        <th style="width: 15%;">Time</th>
-                        <th style="width: 25%;">Source IP</th>
-                        <th>Alert Description</th>
-                        <th style="width: 15%;">Type</th>
+                        <th>Time</th>
+                        <th>Alert</th>
                     </tr>
                 </thead>
-                <tbody id="alertBody">
-                    </tbody>
+                <tbody id="alertBody"></tbody>
             </table>
         </div>
 
         <div class="card">
-            <h2 style="margin-top:0;">Traffic Throughput</h2>
-            <canvas id="trafficChart"></canvas>
-            <p style="font-size: 0.8em; color: #666; margin-top: 15px;">Monitoring enp0s8 interface for threats...</p>
+            <h2 style="margin-top:0; color: #ffab40;">Active Bans</h2>
+            <table id="banTable">
+                <thead>
+                    <tr>
+                        <th>IP Address</th>
+                        <th>Expires</th>
+                    </tr>
+                </thead>
+                <tbody id="banBody"></tbody>
+            </table>
         </div>
     </div>
+
+    <div class="card">
+        <h2 style="margin-top:0;">Traffic Throughput</h2>
+        <canvas id="trafficChart"></canvas>
+        <p style="font-size: 0.8em; color: #666; margin-top: 15px;">Interface: enp0s8 | PPS Monitoring Active</p>
+    </div>
+</div>
 
     <script>
         // Setup WebSocket connection
@@ -57,14 +71,12 @@
         function addAlertToTable(alert) {
             const tbody = document.getElementById("alertBody");
             const row = tbody.insertRow(0);
-            row.style.animation = "fadeIn 0.5s";
+            // Only showing Time and Message to save space in the small column
             row.innerHTML = `
-                <td>${alert.timestamp}</td>
-                <td>${alert.source}</td>
-                <td>${alert.message}</td>
-                <td><span class="type-${alert.type}">${alert.type}</span></td>
+                <td style="font-size: 0.85em; color: #888;">${alert.timestamp}</td>
+                <td><span class="type-${alert.type}">${alert.message}</span></td>
             `;
-            if (tbody.rows.length > 10) tbody.deleteRow(10);
+            if (tbody.rows.length > 8) tbody.deleteRow(8);
         }
 
         // Simple Chart Setup
@@ -90,17 +102,37 @@
         });
 
         socket.onmessage = function(event) {
-            const alert = JSON.parse(event.data);
-            
-            if (alert.type === "PULSE") {
-                // If it's a pulse, update the chart with the real number
-                const packetCount = parseInt(alert.message);
-                updateChart(packetCount);
-            } else {
-                // If it's a threat (DPI or FLOOD), add it to the table
-                addAlertToTable(alert);
-            }
-        };
+    const alert = JSON.parse(event.data);
+    
+        if (alert.type === "PULSE") {
+            updateChart(parseInt(alert.message));
+        } else if (alert.type === "BAN") {
+            updateBanList(alert.source, alert.timestamp);
+            addAlertToTable(alert); // Also show it in the main feed
+        } else if (alert.type === "UNBAN") {
+            removeIPFromBanList(alert.source);
+        } else {
+            addAlertToTable(alert);
+        }
+    };
+
+        function updateBanList(ip, expires) {
+            const tbody = document.getElementById("banBody");
+            // Check if IP is already there to avoid duplicates
+            if (document.getElementById("ban-" + ip.replace(/\./g, '-'))) return;
+
+            const row = tbody.insertRow();
+            row.id = "ban-" + ip.replace(/\./g, '-'); // Create unique ID for the row
+            row.innerHTML = `
+                <td style="color: #ffab40;">${ip}</td>
+                <td>${expires}</td>
+            `;
+        }
+
+        function removeIPFromBanList(ip) {
+            const row = document.getElementById("ban-" + ip.replace(/\./g, '-'));
+            if (row) row.remove();
+        }
 
         function updateChart(count) {
             chart.data.datasets[0].data.push(count);
