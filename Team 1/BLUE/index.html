@@ -13,8 +13,12 @@
         table { width: 100%; border-collapse: collapse; margin-top: 10px; }
         th { text-align: left; color: #888; border-bottom: 1px solid #333; padding: 10px; }
         td { padding: 12px 10px; border-bottom: 1px solid #222; font-family: monospace; }
-        .type-DPI { color: #ff5252; font-weight: bold; background: rgba(255, 82, 82, 0.1); padding: 2px 6px; border-radius: 4px; }
-        .type-FLOOD { color: #ffab40; font-weight: bold; background: rgba(255, 171, 64, 0.1); padding: 2px 6px; border-radius: 4px; }
+        /* Specific Alert Styling */
+        .type-DPI_THREAT { color: #ff5252; font-weight: bold; background: rgba(255, 82, 82, 0.15); padding: 2px 8px; border-radius: 4px; border: 1px solid rgba(255, 82, 82, 0.3);}
+        .type-SSH_BRUTE { color: #ffd740; font-weight: bold; background: rgba(255, 215, 64, 0.15); padding: 2px 8px; border-radius: 4px; border: 1px solid rgba(255, 215, 64, 0.3);}
+        .type-FLOOD { color: #ffab40; font-weight: bold; background: rgba(255, 171, 64, 0.15); padding: 2px 8px; border-radius: 4px; border: 1px solid rgba(255, 171, 64, 0.3);}
+        .type-BAN { color: #ffffff; background: #d32f2f; padding: 2px 8px; border-radius: 4px; font-size: 0.85em; text-transform: uppercase; letter-spacing: 1px;}
+        .type-UNBAN {color: #4caf50;font-weight: bold;}
         .status-online { color: #4caf50; font-size: 0.9em; }
     </style>
 </head>
@@ -80,12 +84,17 @@
         function addAlertToTable(alert) {
             const tbody = document.getElementById("alertBody");
             const row = tbody.insertRow(0);
-            // Only showing Time and Message to save space in the small column
+            
+            // Match the alert type to the CSS class
+            const alertClass = `type-${alert.type}`;
+            
             row.innerHTML = `
                 <td style="font-size: 0.85em; color: #888;">${alert.timestamp}</td>
-                <td><span class="type-${alert.type}">${alert.message}</span></td>
+                <td><span class="${alertClass}">${alert.message}</span></td>
             `;
-            if (tbody.rows.length > 8) tbody.deleteRow(8);
+            
+            // Keep the feed focused on recent events
+            if (tbody.rows.length > 12) tbody.deleteRow(12);
         }
 
         // Simple Chart Setup
