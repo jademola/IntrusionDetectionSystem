@@ -20,7 +20,8 @@ import (
 )
 
 var totalPackets uint64
-var perIP sync.Map // map[string]*uint64
+var perIP sync.Map    // map[string]*uint64
+var sshPerIP sync.Map // map[string]*uint64
 var blacklist sync.Map
 
 // Dangerous keywords used in packet inspection
@@ -31,19 +32,19 @@ var dangerZone = []string{
 	"admin", "password", "login", // Credential Hunting
 }
 
-// applyFilters sets the BPF rules to ignore SSH noise
 func applyFilters(handle *pcap.Handle) {
-	// 1. "not port 22 and not port 2222" -> Ignores SSH
 	// 2. "not host 192.168.56.1" -> Ignores all traffic FROM or TO your Windows/Mac host
 	// 3. "not net 224.0.0.0/4" -> Ignores ALL Multicast traffic (SSDP, mDNS, etc.)
-	filter := "not port 22 and not port 2222 and not host 192.168.56.1 and not net 224.0.0.0/4"
+	filter := "not host 192.168.56.1 and not net 224.0.0.0/4"
 
 	err := handle.SetBPFFilter(filter)
 	if err != nil {
 		log.Fatalf("Error applying BPF filter: %v", err)
 	}
-	fmt.Println("Network filters active: SSH, Host Noise, and Multicast ignored.")
+	fmt.Println("Network filters active: Host Noise, and Multicast ignored.")
 }
+
+func checkSSHBruteForce()
 
 func inspectPayload(src string, data []byte, logFile *os.File) {
 	//Convert binary payload to string for searching
@@ -152,6 +153,29 @@ func detectFlooding() {
 			}
 		}
 	}
+
+	sshThreshold := uint64(50)
+
+	sshPerIP.Range(func(key, value any) bool {
+		ip := key.(string)
+		count := atomic.SwapUint64(value.(*uint64), 0)
+
+		if count > sshThreshold {
+			msg := fmt.Sprintf("!!! SSH brute-force from %s: %d attempts/sec\n", ip, count)
+			fmt.Print(msg)
+
+			broadcast <- Alert{
+				Timestamp: time.Now().Format("15:04:05"),
+				Source:    ip,
+				Message:   fmt.Sprintf("SSH brute-force: %d attempts/sec", count),
+				Type:      "SSH_BRUTE",
+			}
+
+			expiration := time.Now().Add(60 * time.Second)
+			blacklist.Store(ip, expiration)
+		}
+		return true
+	})
 }
 
 // 3. The Main Function (The entry point)
@@ -159,7 +183,7 @@ func main() {
 	fmt.Println("GoGuard IPS: Defender Node is starting...")
 	fmt.Println("Interface: enp0s8 (Target)")
 
-	device := "enp0s8" // may need to set dependent on your own machine
+	device := "enp0s9" // may need to set dependent on your own machine
 	snapshotLen := int32(1024)
 	promiscuous := true
 	timeout := 100 * time.Millisecond
@@ -211,8 +235,28 @@ func main() {
 
 			ip, _ := ipLayer.(*layers.IPv4)
 
-			//perIP tracking
 			src := ip.SrcIP.String()
+			if tcpLayer := packet.Layer(layers.LayerTypeTCP); tcpLayer != nil {
+				tcp := tcpLayer.(*layers.TCP)
+
+				isSSH := false
+
+				// Fast path: standard port
+				if tcp.DstPort == 22 {
+					isSSH = true
+				} else if len(tcp.Payload) > 0 && strings.HasPrefix(string(tcp.Payload), "SSH-") {
+					isSSH = true
+				}
+
+				if isSSH {
+					if tcp.SYN && !tcp.ACK {
+						val, _ := sshPerIP.LoadOrStore(src, new(uint64))
+						atomic.AddUint64(val.(*uint64), 1)
+					}
+				}
+			}
+
+			//perIP tracking
 			val, _ := perIP.LoadOrStore(src, new(uint64))
 
 			//check blacklist to see if IP is present
