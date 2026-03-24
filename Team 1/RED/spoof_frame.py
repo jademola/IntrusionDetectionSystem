@@ -1,4 +1,4 @@
-from scapy.all import IP, TCP, Raw, send, conf
+from scapy.all import IP, TCP, Raw, send, conf, RandShort
 
 # CONFIGURATION
 victim_ip = "192.168.56.200" # Let's use a "fake" high IP to avoid gateway issues
