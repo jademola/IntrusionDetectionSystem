@@ -96,38 +96,10 @@ func isBlacklisted(src string) bool {
 		return false
 	}
 
+	// If it is in the map, it is banned.
 	expiration := val.(time.Time)
-	if time.Now().Before(expiration) {
-		// --- KERNEL ENFORCEMENT CHECK ---
-		// At this point, the packet has already been dropped by iptables
-		// if executeBan ran correctly. We just log it for the dashboard.
-		fmt.Printf("Packet Dropped from %s (Banned until %s)\n", src, expiration.Format("15:04:05"))
-		return true
-	}
-
-	// --- TIMEOUT EXPIRED: REMOVE KERNEL BLOCK ---
-	// This physically deletes the DROP rule from the Linux Kernel
-	cmd := exec.Command("sudo", "iptables", "-D", "INPUT", "-s", src, "-j", "DROP")
-	err := cmd.Run()
-	if err != nil {
-		// If the rule was already gone (or never existed), we log it but continue
-		fmt.Printf("Note: Could not clear iptables rule for %s: %v\n", src, err)
-	} else {
-		fmt.Printf("Kernel block lifted for %s.\n", src)
-	}
-
-	// Clean up Go memory
-	blacklist.Delete(src)
-
-	fmt.Printf("Timeout Expired for %s. Re-enabling access.\n", src)
-	broadcast <- Alert{
-		Timestamp: time.Now().Format("15:04:05"),
-		Source:    src,
-		Type:      "UNBAN",
-		Message:   "Ban Expired",
-	}
-
-	return false
+	fmt.Printf("Packet Dropped from %s (Banned until %s)\n", src, expiration.Format("15:04:05"))
+	return true
 }
 
 // Helper for handling ban and broadcasting
@@ -159,6 +131,27 @@ func executeBan(ip string, count uint64, reason string) {
 		Type:      "BAN",
 	}
 
+	// --- NEW: THE BACKGROUND TIMER ---
+	go func(targetIP string) {
+		// Wait exactly 60 seconds in the background
+		time.Sleep(60 * time.Second)
+
+		// 1. Remove Kernel Block
+		cmd := exec.Command("sudo", "iptables", "-D", "INPUT", "-s", targetIP, "-j", "DROP")
+		cmd.Run()
+
+		// 2. Clean up Go memory
+		blacklist.Delete(targetIP)
+
+		// 3. Notify Dashboard and Console
+		fmt.Printf("Timeout Expired for %s. Re-enabling access.\n", targetIP)
+		broadcast <- Alert{
+			Timestamp: time.Now().Format("15:04:05"),
+			Source:    targetIP,
+			Type:      "UNBAN",
+			Message:   "Ban Expired",
+		}
+	}(ip)
 }
 
 func applyFilters(handle *pcap.Handle) {
