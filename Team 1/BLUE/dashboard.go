@@ -10,10 +10,11 @@ import (
 
 // Define what the alert structure is for the frontend
 type Alert struct {
-	Timestamp string `json:"timestamp"`
-	Source    string `json:"source"`
-	Message   string `json:"message"`
-	Type      string `json:"type"`
+	Timestamp string            `json:"timestamp"`
+	Source    string            `json:"source"`
+	Message   string            `json:"message"`
+	Type      string            `json:"type"`
+	Series    map[string]uint64 `json:"series,omitempty"`
 }
 
 var upgrader = websocket.Upgrader{

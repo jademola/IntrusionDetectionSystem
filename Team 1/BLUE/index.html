@@ -54,9 +54,18 @@
     </div>
 
     <div class="card">
-        <h2 style="margin-top:0;">Traffic Throughput</h2>
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
+            <h2 style="margin-top:0; margin-bottom:0;">Traffic Throughput</h2>
+            <label for="trafficMode" style="font-size:0.85em; color:#aaa; display:flex; align-items:center; gap:8px;">
+                View
+                <select id="trafficMode" style="background:#121212; color:#e0e0e0; border:1px solid #333; border-radius:6px; padding:4px 8px;">
+                    <option value="total" selected>Total PPS</option>
+                    <option value="perIP">Per-Source-IP PPS</option>
+                </select>
+            </label>
+        </div>
         <canvas id="trafficChart"></canvas>
-        <p style="font-size: 0.8em; color: #666; margin-top: 15px;">Interface: enp0s8 | PPS Monitoring Active</p>
+        <p id="trafficHint" style="font-size: 0.8em; color: #666; margin-top: 15px;">Interface: enp0s8 | Total PPS Monitoring Active</p>
     </div>
 </div>
 
@@ -83,20 +92,21 @@
         const ctx = document.getElementById('trafficChart').getContext('2d');
         // Change from 10 to 60 (this represents 60 seconds of history if sampling at 1s)
         const chartHistory = 60; 
+        const totalDataset = {
+            label: 'Packets Per Second',
+            data: Array(chartHistory).fill(0),
+            borderColor: '#4da6ff',
+            backgroundColor: 'rgba(77, 166, 255, 0.1)', // Slightly lighter fill
+            fill: true,
+            tension: 0.4, // Keep this for the smooth "wave" look
+            pointRadius: 0 // Hide dots for a cleaner "high-res" line
+        };
 
         const chart = new Chart(ctx, {
             type: 'line',
             data: {
                 labels: Array(chartHistory).fill(''), 
-                datasets: [{
-                    label: 'Packets Per Second',
-                    data: Array(chartHistory).fill(0),
-                    borderColor: '#4da6ff',
-                    backgroundColor: 'rgba(77, 166, 255, 0.1)', // Slightly lighter fill
-                    fill: true,
-                    tension: 0.4, // Keep this for the smooth "wave" look
-                    pointRadius: 0 // Hide dots for a cleaner "high-res" line
-                }]
+                datasets: [totalDataset]
             },
             options: { 
                 responsive: true,
@@ -113,11 +123,30 @@
             }
         });
 
+        const trafficModeEl = document.getElementById('trafficMode');
+        const trafficHintEl = document.getElementById('trafficHint');
+        let trafficMode = 'total';
+        let perIPDatasets = {};
+
+        trafficModeEl.addEventListener('change', (event) => {
+            trafficMode = event.target.value;
+            if (trafficMode === 'total') {
+                trafficHintEl.textContent = 'Interface: enp0s8 | Total PPS Monitoring Active';
+                switchToTotalDataset();
+            } else {
+                trafficHintEl.textContent = 'Interface: enp0s8 | Per-Source-IP PPS Monitoring Active';
+                switchToPerIPDatasets();
+            }
+            chart.update('none');
+        });
+
         socket.onmessage = function(event) {
     const alert = JSON.parse(event.data);
     
         if (alert.type === "PULSE") {
-            updateChart(parseInt(alert.message));
+            updateTotalChart(parseInt(alert.message));
+        } else if (alert.type === "PULSE_PER_IP") {
+            updatePerIPChart(alert.series || {});
         } else if (alert.type === "BAN") {
             updateBanList(alert.source, alert.timestamp);
             addAlertToTable(alert); // Also show it in the main feed
@@ -146,13 +175,13 @@
             if (row) row.remove();
         }
 
-        function updateChart(count) {
+        function updateTotalChart(count) {
             // Add the new data point
-            chart.data.datasets[0].data.push(count);
+            totalDataset.data.push(count);
             
             // Remove the oldest point to keep the window at 60
-            if (chart.data.datasets[0].data.length > chartHistory) {
-                chart.data.datasets[0].data.shift();
+            if (totalDataset.data.length > chartHistory) {
+                totalDataset.data.shift();
             }
 
             // Optional: Add a timestamp label for the X-axis (even if hidden)
@@ -162,7 +191,75 @@
             }
 
             // Use 'none' to render instantly without transition lag
-            chart.update('none'); 
+            if (trafficMode === 'total') {
+                switchToTotalDataset();
+                chart.update('none');
+            }
+        }
+
+        function updatePerIPChart(series) {
+            // Extend known lines with zeros by default, then overwrite if present in this tick.
+            Object.values(perIPDatasets).forEach((dataset) => {
+                dataset.data.push(0);
+                if (dataset.data.length > chartHistory) {
+                    dataset.data.shift();
+                }
+            });
+
+            Object.entries(series).forEach(([ip, count]) => {
+                if (!perIPDatasets[ip]) {
+                    perIPDatasets[ip] = {
+                        label: ip,
+                        data: Array(chartHistory - 1).fill(0).concat(count),
+                        borderColor: colorForKey(ip),
+                        backgroundColor: 'transparent',
+                        fill: false,
+                        tension: 0.25,
+                        pointRadius: 0
+                    };
+                } else {
+                    const data = perIPDatasets[ip].data;
+                    data[data.length - 1] = count;
+                }
+            });
+
+            if (trafficMode === 'perIP') {
+                switchToPerIPDatasets();
+                chart.update('none');
+            }
+        }
+
+        function switchToTotalDataset() {
+            if (chart.data.datasets.length === 1 && chart.data.datasets[0] === totalDataset) {
+                return;
+            }
+            chart.data.datasets = [totalDataset];
+        }
+
+        function switchToPerIPDatasets() {
+            const datasets = Object.values(perIPDatasets);
+            if (datasets.length === 0) {
+                chart.data.datasets = [{
+                    label: 'No active source addresses yet',
+                    data: Array(chartHistory).fill(0),
+                    borderColor: '#555',
+                    backgroundColor: 'transparent',
+                    fill: false,
+                    tension: 0,
+                    pointRadius: 0
+                }];
+                return;
+            }
+            chart.data.datasets = datasets;
+        }
+
+        function colorForKey(key) {
+            let hash = 0;
+            for (let i = 0; i < key.length; i++) {
+                hash = key.charCodeAt(i) + ((hash << 5) - hash);
+            }
+            const hue = Math.abs(hash) % 360;
+            return `hsl(${hue}, 70%, 55%)`;
         }
     </script>
 </body>

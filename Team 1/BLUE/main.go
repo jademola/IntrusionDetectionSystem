@@ -82,6 +82,9 @@ func inspectPayload(src string, data []byte, logFile *os.File) {
 func detectFlooding() {
 	// Make flag directory if not present
 	_ = os.MkdirAll("flags", 0755)
+	_ = os.MkdirAll("logs/TCP", 0755)
+	_ = os.MkdirAll("logs/ICMP", 0755)
+	_ = os.MkdirAll("logs/TCP", 0755)
 
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
@@ -93,6 +96,7 @@ func detectFlooding() {
 	for range ticker.C {
 		totalRate := atomic.SwapUint64(&totalPackets, 0)
 		logHighRate, logIP := "", ""
+		perIPSnapshot := make(map[string]uint64)
 
 		pulseAlert := Alert{
 			Timestamp: time.Now().Format("15:04:05"),
@@ -110,6 +114,10 @@ func detectFlooding() {
 		perIP.Range(func(key, value any) bool {
 			ip := key.(string)
 			count := atomic.SwapUint64(value.(*uint64), 0)
+
+			if count > 0 {
+				perIPSnapshot[ip] = count
+			}
 
 			// test for nmap resulted in 1700+ packets sent and received
 			if count > 500 {
@@ -139,6 +147,13 @@ func detectFlooding() {
 			}
 			return true
 		})
+
+		broadcast <- Alert{
+			Timestamp: time.Now().Format("15:04:05"),
+			Source:    "System",
+			Type:      "PULSE_PER_IP",
+			Series:    perIPSnapshot,
+		}
 
 		// Only open the file if we actually have something to report
 		if logHighRate != "" || logIP != "" {
