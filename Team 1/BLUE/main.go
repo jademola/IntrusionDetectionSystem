@@ -3,7 +3,8 @@ package main
 
 // 2. Imports (The tools we are borrowing)
 import (
-	"fmt" //printing to console
+	"flag" // for command line args
+	"fmt"  //printing to console
 	"log"
 	"strings"
 	"time"
@@ -181,7 +182,11 @@ func main() {
 	fmt.Println("GoGuard IPS: Defender Node is starting...")
 	fmt.Println("Interface: enp0s8 (Target)")
 
-	device := "enp0s9" // may need to set dependent on your own machine
+	ifacePtr := flag.String("iface", "enp0s8", "The network interface to sniff on")
+
+	flag.Parse()
+
+	device := *ifacePtr // may need to set dependent on your own machine
 	snapshotLen := int32(1024)
 	promiscuous := true
 	timeout := 100 * time.Millisecond
