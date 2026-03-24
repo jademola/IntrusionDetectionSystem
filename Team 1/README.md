@@ -149,7 +149,8 @@ Once both environments are configured and you are SSH'd into both machines, foll
 Navigate to your BLUE folder and start the Go application. It must stay running to capture the incoming packets.
 
     cd "IntrusionDetectionSystem/Team\ 1/BLUE"
-    sudo go run main.go
+    sudo go run main.go dashboard.go -iface 'TARGET MACHINE i.e., enp0s8'
+
 
 Verify that you see the message: ` GoGuard: Monitoring enp0s8. Waiting for packets...` 
 
@@ -165,6 +166,8 @@ In your Kali terminal, navigate to the RED folder and execute the Python script.
     cd "IntrusionDetectionSystem/Team\ 1/RED"
     python3 orchestrator.py <TARGET_UBUNTU_IP>
 Example:   `python3 orchestrator.py 192.168.56.105`
+Example:   `python3 spoof_frame.py`
+Example:   `python3 frag_attack.py`
 
 ## 4.Confirm Detection
 Switch back to your Ubuntu terminal. You should see several lines of output appearing in real-time as the pings arrive:
@@ -181,3 +184,5 @@ You should see exactly 8 lines of detection for a 4-packet ping (4 requests from
 
 #### Noise Filtering: 
 If you are still seeing UDP traffic from 192.168.56.100 or .255, ensure you have pulled the latest version of main.go with the updated BPF filters.
+
+
