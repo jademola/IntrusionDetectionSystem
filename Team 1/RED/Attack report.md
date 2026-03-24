@@ -118,7 +118,7 @@ Furthermore, GoGuard's in-memory blacklist blocks future packets from a banned I
 ## 3.2 Attack 2: SYN Flood (Availability Exhaustion)
 
 ### Objective
-Simulate a Denial-of-Service (DoS) attack using SYN flooding.
+Simulate a Denial-of-Service (DoS) attack by flooding the target with SYN packets, exhausting its TCP connection table and making it unable to respond to legitimate traffic.
 
 ### Rationale
 SYN floods exploit TCP handshakes to exhaust server resources, preventing legitimate access. This evaluates:
@@ -128,12 +128,19 @@ SYN floods exploit TCP handshakes to exhaust server resources, preventing legiti
 
 ### Execution
 ```bash
-sudo hping3 -S -p 22 --flood <Target-IP>
+sudo hping3 -S --flood -V -p 22 192.168.56.10
 ```
-
 - Randomizes source IP  
 - Simulates distributed attacks  
-- Tests IP-blocking limitations  
+- Tests IP-blocking limitations
+
+### Parameters Explained
+| Flag | Description |
+|---|---|
+| `-S` | Sets only the SYN flag — simulates TCP handshake without completing it |
+| `--flood` | Sends packets as fast as possible with no delay |
+| `-V` | Verbose mode showing packet count and transmission statistics |
+| `-p 22` | Targets SSH port specifically |
 
 ### IPS Detection Focus
 - Spike in SYN packets  
@@ -145,19 +152,61 @@ sudo hping3 -S -p 22 --flood <Target-IP>
 - IP blocking (limited with random sources)  
 - Logging and alerting  
 
+### Results
+- hping3 generated well over 500 SYN packets per second
+- GoGuard's `detectFlooding()` goroutine triggered the high-rate alert within 1 second
+- Attacker IP (192.168.56.4) was added to GoGuard's in-memory blacklist
+- GoGuard began dropping all subsequent packets from the attacker IP
+
+**Evidence**:
+images
+
+### Analysis:
+The SYN flood detection worked effectively. The 1-second ticker in `detectFlooding()` provided near-real-time response. The ban duration of 60 seconds was sufficient to interrupt the attack window.
+
+However, a key limitation was identified: the `--rand-source` flag was not used in this test. If randomized source IPs had been used, the per-IP ban would be completely ineffective since each packet would appear to originate from a different address — a realistic scenario in distributed denial-of-service (DDoS) attacks.
+
 ---
 
-## 4. Execution Procedure
+## 4. Key Findings
 
-1. Start GoGuard IPS on the Ubuntu machine  
-2. Ensure correct network interface is monitored (e.g., `enp0s8`)  
-3. Verify SSH service is running  
+### 4.1 Strengths of GoGuard
 
-4. Launch attacks from Kali:
-   - Run Hydra for brute force testing  
-   - Run hping3 for SYN flood testing  
+- SYN flood detected within 1 second of attack onset via rate-based goroutine
+- Per-IP packet rate tracking correctly identified and banned 192.168.56.4
+- In-memory blacklist with 60-second expiry provided effective temporary blocking
+- Modular architecture (BPF filters, goroutines) allows targeted interface monitoring
+- Promiscuous mode packet capture ensures no traffic is missed on the monitored interface
 
-5. Monitor:
-   - Detection logs  
-   - Response time  
-   - iptables rules  
+### 4.2 Identified Gaps
+
+| Gap | Description |
+|---|---|
+| BPF filter excluded port 22 | SSH attacks were completely invisible to GoGuard until the filter was manually corrected |
+| Detection ≠ Prevention | SSH brute force was detected but the successful login was not blocked |
+| Response time gap | The 1-second detection window allows credential validation to succeed before the ban is applied |
+| In-memory blacklist | Bans reset when GoGuard restarts — not persistent across sessions |
+| rand-source vulnerability | SYN floods with randomized source IPs bypass per-IP banning entirely |
+| Hardcoded dstIP | Destination IP for DPI was hardcoded to 192.168.56.102, requiring manual correction |
+
+---
+
+## 5. Recommendations for Blue Team
+
+1. **Implement SSH session termination** — use iptables connection tracking (`conntrack`) to kill established sessions from banned IPs, not just block new packets
+2. **Enable SYN cookies** at the kernel level as a complement to application-layer detection: `sysctl -w net.ipv4.tcp_syncookies=1`
+3. **Persist iptables rules** using `iptables-save` so bans survive a GoGuard restart
+4. **Interface-level rate limiting** for rand-source flood mitigation, rather than per-IP banning
+5. **Remove port 22 from BPF exclusion** or add a dedicated SSH authentication failure rate monitor
+6. **Make dstIP dynamic** — detect it automatically from the interface rather than hardcoding
+
+---
+
+## 6. Conclusion
+
+Both attacks were successfully executed within the isolated lab environment. GoGuard demonstrated effective flood detection and automated IP banning for the SYN flood attack. However, the SSH brute force test revealed a critical gap — detection without prevention. The system identified the attack but could not stop the authenticated session from being established.
+
+This exercise provided practical insight into the real challenges of host-based intrusion prevention: blocking attacks at the correct stage in the connection lifecycle, the limitations of rate-based detection against evasion techniques like source IP randomization, and the operational importance of monitoring the correct network interface. These findings directly inform the improvements needed in Phase 2 of the GoGuard development roadmap.
+
+---
+
