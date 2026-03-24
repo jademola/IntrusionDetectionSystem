@@ -33,6 +33,101 @@ var dangerZone = []string{
 	"admin", "password", "login", // Credential Hunting
 }
 
+//----- Defense Functions -----
+
+func detectFlood(src string) bool {
+	val, _ := perIP.LoadOrStore(src, new(uint64))
+	count := atomic.AddUint64(val.(*uint64), 1)
+	if count > 500 {
+		executeBan(src, count, "FLOOD")
+		return true
+	}
+	return false
+}
+
+func logPacket(ip *layers.IPv4, src string, logFile *os.File) {
+	timestamp := time.Now().Format("15:04:05.999999")
+	detectionLog := fmt.Sprintf("[%s] Detection: %s --> %s | Proto: %s\n",
+		timestamp, src, ip.DstIP, ip.Protocol)
+
+	// Print to terminal for live feedback
+	fmt.Print(detectionLog)
+
+	// Save to the persistent log file
+	if logFile != nil {
+		_, _ = logFile.WriteString(detectionLog)
+	}
+}
+
+func detectSSHBrute(packet gopacket.Packet, src string) bool {
+	tcpLayer := packet.Layer(layers.LayerTypeTCP)
+	if tcpLayer == nil {
+		return false
+	}
+
+	tcp := tcpLayer.(*layers.TCP)
+	isSSH := tcp.DstPort == 22 || (len(tcp.Payload) > 0 && strings.HasPrefix(string(tcp.Payload), "SSH-"))
+
+	if isSSH && tcp.SYN && !tcp.ACK {
+		val, _ := sshPerIP.LoadOrStore(src, new(uint64))
+		count := atomic.AddUint64(val.(*uint64), 1)
+		if count >= 3 {
+			executeBan(src, count, "SSH_BRUTE")
+			return true
+		}
+	}
+	return false
+}
+
+func processDPI(packet gopacket.Packet, src string, logFile *os.File) {
+	appLayer := packet.ApplicationLayer()
+	if appLayer != nil {
+		// This still calls your existing inspectPayload function
+		inspectPayload(src, appLayer.Payload(), logFile)
+	}
+}
+
+func isBlacklisted(src string) bool {
+	val, banned := blacklist.Load(src)
+	if !banned {
+		return false
+	}
+
+	expiration := val.(time.Time)
+	if time.Now().Before(expiration) {
+		fmt.Printf("Packet Dropped from %s (Banned until %s)\n", src, expiration.Format("15:04:05"))
+		return true
+	}
+
+	blacklist.Delete(src)
+	fmt.Printf("Timeout Expired for %s. Re-enabling access.\n", src)
+	broadcast <- Alert{Source: src, Type: "UNBAN"}
+	return false
+}
+
+// Helper for handling ban and broadcasting
+func executeBan(ip string, count uint64, reason string) {
+	expiration := time.Now().Add(60 * time.Second)
+	blacklist.Store(ip, expiration)
+
+	fmt.Printf("!!! %s detected from %s: %d attempts. IP BANNED.\n", reason, ip, count)
+
+	broadcast <- Alert{
+		Timestamp: time.Now().Format("15:04:05"),
+		Source:    ip,
+		Message:   fmt.Sprintf("%s: %d detected", reason, count),
+		Type:      reason, // e.g., "SSH_BRUTE" or "FLOOD"
+	}
+
+	broadcast <- Alert{
+		Timestamp: expiration.Format("15:04:05"),
+		Source:    ip,
+		Message:   "IP Blacklisted",
+		Type:      "BAN",
+	}
+
+}
+
 func applyFilters(handle *pcap.Handle) {
 	// 2. "not host 192.168.56.1" -> Ignores all traffic FROM or TO your Windows/Mac host
 	// 3. "not net 224.0.0.0/4" -> Ignores ALL Multicast traffic (SSDP, mDNS, etc.)
@@ -46,45 +141,37 @@ func applyFilters(handle *pcap.Handle) {
 }
 
 func inspectPayload(src string, data []byte, logFile *os.File) {
-	//Convert binary payload to string for searching
+	// Convert binary payload to string for searching
 	payload := string(data)
 	upperPayload := strings.ToUpper(payload)
 
 	for _, keyword := range dangerZone {
 		if strings.Contains(upperPayload, strings.ToUpper(keyword)) {
 			timestamp := time.Now().Format("15:04:05.999999")
-			alertMsg := fmt.Sprintf("[%s] !!! DPI ALERT: Keyword '%s' detected from %s\n", timestamp, keyword, src)
 
-			//Print alert
+			// 1. Log and Terminal Output
+			alertMsg := fmt.Sprintf("[%s] !!! DPI ALERT: Keyword '%s' detected from %s\n", timestamp, keyword, src)
 			fmt.Print(alertMsg)
 
-			//Create alert and send it to dashboard
-			payloadAlert := Alert{
-				Timestamp: time.Now().Format("15:04:05"),
-				Source:    src,
-				Message:   fmt.Sprintf("Keyword '%s' detected", keyword),
-				Type:      "DPI",
-			}
-			broadcast <- payloadAlert
-
-			// Write to main log
 			if logFile != nil {
 				logFile.WriteString(alertMsg)
 			}
 
-			//Exit on first detection
+			// 2. TRIGGER THE BAN IMMEDIATELY
+			// We use '1' as the count because a single DPI match is a high-severity event
+			executeBan(src, 1, "DPI_THREAT")
+
+			// 3. Exit on first detection to avoid redundant bans for the same packet
 			break
 		}
 	}
-
 }
 
-func detectFlooding() {
-	// Make flag directory if not present
+func monitorSystemStats() {
+	// 1. Setup Directories
 	_ = os.MkdirAll("flags", 0755)
 	_ = os.MkdirAll("logs/TCP", 0755)
 	_ = os.MkdirAll("logs/ICMP", 0755)
-	_ = os.MkdirAll("logs/TCP", 0755)
 
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
@@ -92,94 +179,55 @@ func detectFlooding() {
 	dateTime := time.Now().Format("2006-01-02_15-04-05")
 	logName := fmt.Sprintf("flags/log_%s", dateTime)
 
-	//broadcasts the packet count to dashboard
 	for range ticker.C {
+		// 2. Statistics Gathering
+		// Swap resets the total global counter to 0 for the next second
 		totalRate := atomic.SwapUint64(&totalPackets, 0)
-		logHighRate, logIP := "", ""
 		perIPSnapshot := make(map[string]uint64)
+		logHighRate := ""
 
-		pulseAlert := Alert{
+		if totalRate > 5000 {
+			logHighRate = fmt.Sprintf("!!! High Total Rate Detected: %d packets/sec\n", totalRate)
+		}
+
+		// 3. Map Cleanup
+		// We iterate through maps to grab stats for the dashboard AND reset counters
+		perIP.Range(func(key, value any) bool {
+			ip := key.(string)
+			// Resetting here ensures our 'event' triggers in main are per-second
+			count := atomic.SwapUint64(value.(*uint64), 0)
+			if count > 0 {
+				perIPSnapshot[ip] = count
+			}
+			return true
+		})
+
+		// SAFETY: If the map grows too large (e.g., 50k entries), clear it entirely
+		// to prevent memory exhaustion from spoofed IP attacks.
+		mapCounter := 0
+		perIP.Range(func(_, _ any) bool { mapCounter++; return true })
+		if mapCounter > 50000 {
+			perIP = sync.Map{}
+			sshPerIP = sync.Map{}
+			fmt.Println("!!! IPS Protection: High map cardinality detected. Clearing cache.")
+		}
+
+		sshPerIP.Range(func(key, value any) bool {
+			// Just reset the SSH counters; main handles the actual banning now
+			atomic.SwapUint64(value.(*uint64), 0)
+			return true
+		})
+
+		// 4. Dashboard Reporting
+		// Global throughput pulse
+		broadcast <- Alert{
 			Timestamp: time.Now().Format("15:04:05"),
 			Source:    "System",
 			Message:   fmt.Sprintf("%d", totalRate),
 			Type:      "PULSE",
 		}
 
-		broadcast <- pulseAlert
-
-		if totalRate > 5000 {
-			logHighRate = fmt.Sprintf("!!! High Total Rate Detected: %d packets/per sec\n", totalRate)
-		}
-
-		perIP.Range(func(key, value any) bool {
-			ip := key.(string)
-			count := atomic.SwapUint64(value.(*uint64), 0)
-
-			if count > 0 {
-				perIPSnapshot[ip] = count
-			}
-
-			// test for nmap resulted in 1700+ packets sent and received
-			if count > 500 {
-				logIP += fmt.Sprintf("!!! Possible packet flooding from %s: %d packets/per sec\n", ip, count)
-
-				//Create alert and send it to dashboard
-				floodAlert := Alert{
-					Timestamp: time.Now().Format("15:04:05"),
-					Source:    ip,
-					Message:   fmt.Sprintf("Flooding detected: %d pkts/sec", count),
-					Type:      "FLOOD",
-				}
-
-				broadcast <- floodAlert
-
-				//add IP to blacklist
-				expiration := time.Now().Add(60 * time.Second)
-				blacklist.Store(ip, expiration)
-
-				//Send alert to dashboard with banned IP
-				broadcast <- Alert{
-					Timestamp: expiration.Format("15:04:05"), // Use expiration time
-					Source:    ip,
-					Message:   "IP Blacklisted",
-					Type:      "BAN",
-				}
-			}
-			return true
-		})
-
-		//For our system purpopse, set ssh threshhold to 3 since we have very low traffic
-		sshThreshold := uint64(3)
-
-		//alert for ssh brute force
-		sshPerIP.Range(func(key, value any) bool {
-			ip := key.(string)
-			count := atomic.SwapUint64(value.(*uint64), 0)
-
-			if count > sshThreshold {
-				msg := fmt.Sprintf("!!! SSH brute-force from %s: %d attempts/sec\n", ip, count)
-				fmt.Print(msg)
-
-				broadcast <- Alert{
-					Timestamp: time.Now().Format("15:04:05"),
-					Source:    ip,
-					Message:   fmt.Sprintf("SSH brute-force: %d attempts/sec", count),
-					Type:      "SSH_BRUTE",
-				}
-
-				expiration := time.Now().Add(60 * time.Second)
-				blacklist.Store(ip, expiration)
-
-				broadcast <- Alert{
-					Timestamp: expiration.Format("15:04:05"),
-					Source:    ip,
-					Message:   "SSH Attack: IP Banned",
-					Type:      "BAN",
-				}
-			}
-			return true
-		})
-
+		// Per-IP data for the high-res chart
 		broadcast <- Alert{
 			Timestamp: time.Now().Format("15:04:05"),
 			Source:    "System",
@@ -187,19 +235,16 @@ func detectFlooding() {
 			Series:    perIPSnapshot,
 		}
 
-		// Only open the file if we actually have something to report
-		if logHighRate != "" || logIP != "" {
+		// 5. Logging to File
+		if logHighRate != "" {
 			f, err := os.OpenFile(logName, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 			if err == nil {
 				f.WriteString(logHighRate)
-				f.WriteString(logIP)
-				f.Close()              // Close immediately so the data is saved
-				fmt.Print(logHighRate) // Also print to terminal so you see it live
-				fmt.Print(logIP)
+				f.Close()
+				fmt.Print(logHighRate)
 			}
 		}
 	}
-
 }
 
 // 3. The Main Function (The entry point)
@@ -249,98 +294,45 @@ func main() {
 
 	//Dashboard start
 	StartDashboard()
-	//Flood defense
-	go detectFlooding()
+	// Background Ticker: Now strictly for Charting and Counter Resets
+	go monitorSystemStats()
 
-	//Loop through packets
+	// Loop through packets
 	for packet := range packetSource.Packets() {
-		//Look for the IP layer in this packet
 		ipLayer := packet.Layer(layers.LayerTypeIPv4)
-
-		//Convert generic ipLayer into IPv4 object to read the source, destination and protocol
-		if ipLayer != nil {
-			atomic.AddUint64(&totalPackets, 1)
-
-			ip, _ := ipLayer.(*layers.IPv4)
-
-			src := ip.SrcIP.String()
-			if tcpLayer := packet.Layer(layers.LayerTypeTCP); tcpLayer != nil {
-				tcp := tcpLayer.(*layers.TCP)
-
-				isSSH := false
-
-				// Fast path: standard port
-				if tcp.DstPort == 22 {
-					isSSH = true
-				} else if len(tcp.Payload) > 0 && strings.HasPrefix(string(tcp.Payload), "SSH-") {
-					isSSH = true
-				}
-
-				if isSSH {
-					if tcp.SYN && !tcp.ACK {
-						val, _ := sshPerIP.LoadOrStore(src, new(uint64))
-						atomic.AddUint64(val.(*uint64), 1)
-					}
-				}
-			}
-
-			//perIP tracking
-			val, _ := perIP.LoadOrStore(src, new(uint64))
-
-			//check blacklist to see if IP is present
-			if val, banned := blacklist.Load(src); banned {
-				expiration := val.(time.Time)
-				if time.Now().Before(expiration) {
-					// Still banned
-					fmt.Printf("Packet Dropped from %s (Banned until %s)\n", src, expiration.Format("15:04:05"))
-					continue
-				} else {
-					// Ban expired! Lift the restriction
-					blacklist.Delete(src)
-					fmt.Printf("Timeout Expired for %s. Re-enabling access.\n", src)
-
-					//Send unbanned alert to Dashboard
-					broadcast <- Alert{
-						Source: src,
-						Type:   "UNBAN",
-					}
-				}
-			}
-
-			atomic.AddUint64(val.(*uint64), 1)
-
-			//check if packet has app layer and inspect it
-			if ip.DstIP.String() == dstIP {
-				appLayer := packet.ApplicationLayer()
-				if appLayer != nil {
-					inspectPayload(src, appLayer.Payload(), f)
-				}
-			}
-			// Get a human-readable timestamp
-			timestamp := time.Now().Format("15:04:05.999999")
-
-			// The "Detection" Output
-			fmt.Printf("[%s] Detection: %s --> %s | Proto: %s\n",
-				timestamp,
-				ip.SrcIP,
-				ip.DstIP,
-				ip.Protocol,
-			)
-
-			logPacketInfo := fmt.Sprintf("[%s] Detection: %s --> %s | Proto: %s\n",
-				timestamp,
-				ip.SrcIP,
-				ip.DstIP,
-				ip.Protocol,
-			)
-
-			_, err := f.WriteString(logPacketInfo)
-			if err != nil {
-				panic(err)
-			}
-
+		if ipLayer == nil {
+			continue
 		}
 
-	}
+		ip, _ := ipLayer.(*layers.IPv4)
+		src := ip.SrcIP.String()
 
+		// --- THE SECURITY PIPELINE ---
+
+		// Step 1: Check if already banned
+		if isBlacklisted(src) {
+			continue
+		}
+
+		// Step 2: Update global throughput metrics
+		atomic.AddUint64(&totalPackets, 1)
+
+		// Step 3: Catch high-volume floods
+		if detectFlood(src) {
+			continue
+		}
+
+		// Step 4: Catch SSH brute force attempts
+		if detectSSHBrute(packet, src) {
+			continue
+		}
+
+		// Step 5: Deep Packet Inspection for malicious keywords
+		if ip.DstIP.String() == dstIP {
+			processDPI(packet, src, f)
+		}
+
+		// Step 6: Record the activity
+		logPacket(ip, src, f)
+	}
 }
