@@ -3,7 +3,7 @@ import time
 
 # Configuration
 target_ip = "192.168.56.102"
-target_port = 80
+target_port = 22
 src_ip = "192.168.56.101"
 
 print(f"--- Starting Packet Splitting Attack on {target_ip} ---")
