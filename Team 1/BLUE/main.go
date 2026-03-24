@@ -148,6 +148,38 @@ func detectFlooding() {
 			return true
 		})
 
+		//For our system purpopse, set ssh threshhold to 3 since we have very low traffic
+		sshThreshold := uint64(3)
+
+		//alert for ssh brute force
+		sshPerIP.Range(func(key, value any) bool {
+			ip := key.(string)
+			count := atomic.SwapUint64(value.(*uint64), 0)
+
+			if count > sshThreshold {
+				msg := fmt.Sprintf("!!! SSH brute-force from %s: %d attempts/sec\n", ip, count)
+				fmt.Print(msg)
+
+				broadcast <- Alert{
+					Timestamp: time.Now().Format("15:04:05"),
+					Source:    ip,
+					Message:   fmt.Sprintf("SSH brute-force: %d attempts/sec", count),
+					Type:      "SSH_BRUTE",
+				}
+
+				expiration := time.Now().Add(60 * time.Second)
+				blacklist.Store(ip, expiration)
+
+				broadcast <- Alert{
+					Timestamp: expiration.Format("15:04:05"),
+					Source:    ip,
+					Message:   "SSH Attack: IP Banned",
+					Type:      "BAN",
+				}
+			}
+			return true
+		})
+
 		broadcast <- Alert{
 			Timestamp: time.Now().Format("15:04:05"),
 			Source:    "System",
@@ -168,28 +200,6 @@ func detectFlooding() {
 		}
 	}
 
-	sshThreshold := uint64(50)
-
-	sshPerIP.Range(func(key, value any) bool {
-		ip := key.(string)
-		count := atomic.SwapUint64(value.(*uint64), 0)
-
-		if count > sshThreshold {
-			msg := fmt.Sprintf("!!! SSH brute-force from %s: %d attempts/sec\n", ip, count)
-			fmt.Print(msg)
-
-			broadcast <- Alert{
-				Timestamp: time.Now().Format("15:04:05"),
-				Source:    ip,
-				Message:   fmt.Sprintf("SSH brute-force: %d attempts/sec", count),
-				Type:      "SSH_BRUTE",
-			}
-
-			expiration := time.Now().Add(60 * time.Second)
-			blacklist.Store(ip, expiration)
-		}
-		return true
-	})
 }
 
 // 3. The Main Function (The entry point)
