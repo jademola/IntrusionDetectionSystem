@@ -23,7 +23,7 @@ print("Sending Fragment 1: 'SEL'...")
 send(packet1)
 
 # Small delay to ensure they arrive as distinct packets in the Go buffer
-time.Sleep(0.5)
+time.sleep(0.5)
 
 print("Sending Fragment 2: 'ECT * FROM users;'...")
 send(packet2)
