@@ -11,6 +11,9 @@ import (
 
 	// for logging
 	"os"
+
+	//for iptables
+	"os/exec"
 	// for nmap counts
 	"sync"
 	"sync/atomic"
@@ -95,13 +98,35 @@ func isBlacklisted(src string) bool {
 
 	expiration := val.(time.Time)
 	if time.Now().Before(expiration) {
+		// --- KERNEL ENFORCEMENT CHECK ---
+		// At this point, the packet has already been dropped by iptables
+		// if executeBan ran correctly. We just log it for the dashboard.
 		fmt.Printf("Packet Dropped from %s (Banned until %s)\n", src, expiration.Format("15:04:05"))
 		return true
 	}
 
+	// --- TIMEOUT EXPIRED: REMOVE KERNEL BLOCK ---
+	// This physically deletes the DROP rule from the Linux Kernel
+	cmd := exec.Command("sudo", "iptables", "-D", "INPUT", "-s", src, "-j", "DROP")
+	err := cmd.Run()
+	if err != nil {
+		// If the rule was already gone (or never existed), we log it but continue
+		fmt.Printf("Note: Could not clear iptables rule for %s: %v\n", src, err)
+	} else {
+		fmt.Printf("Kernel block lifted for %s.\n", src)
+	}
+
+	// Clean up Go memory
 	blacklist.Delete(src)
+
 	fmt.Printf("Timeout Expired for %s. Re-enabling access.\n", src)
-	broadcast <- Alert{Source: src, Type: "UNBAN"}
+	broadcast <- Alert{
+		Timestamp: time.Now().Format("15:04:05"),
+		Source:    src,
+		Type:      "UNBAN",
+		Message:   "Ban Expired",
+	}
+
 	return false
 }
 
@@ -110,7 +135,15 @@ func executeBan(ip string, count uint64, reason string) {
 	expiration := time.Now().Add(60 * time.Second)
 	blacklist.Store(ip, expiration)
 
-	fmt.Printf("!!! %s detected from %s: %d attempts. IP BANNED.\n", reason, ip, count)
+	// This adds a rule to the top of the firewall to DROP all traffic from this IP
+	cmd := exec.Command("sudo", "iptables", "-I", "INPUT", "-s", ip, "-j", "DROP")
+	err := cmd.Run()
+	if err != nil {
+		fmt.Printf("Error applying iptables rule: %v\n", err)
+	}
+
+	// 3. Existing Alerts
+	fmt.Printf("!!! %s detected from %s: %d attempts. KERNEL BLOCK APPLIED.\n", reason, ip, count)
 
 	broadcast <- Alert{
 		Timestamp: time.Now().Format("15:04:05"),
