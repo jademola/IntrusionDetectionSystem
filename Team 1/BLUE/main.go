@@ -44,8 +44,6 @@ func applyFilters(handle *pcap.Handle) {
 	fmt.Println("Network filters active: Host Noise, and Multicast ignored.")
 }
 
-func checkSSHBruteForce()
-
 func inspectPayload(src string, data []byte, logFile *os.File) {
 	//Convert binary payload to string for searching
 	payload := string(data)
