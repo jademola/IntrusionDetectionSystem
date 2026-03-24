@@ -44,7 +44,13 @@ The evaluation focused on detection accuracy response time, and the effectivenes
 
 Both VMs were connected via a VirtualBox Host-Only network (192.168.56.0/24), completely isolated from the university network. GoGuard was configured to monitor the `enp0s9` interface specifically.
 
-> 📸 **Screenshot:** (ip a of ubuntu and kali)
+**Ubuntu Server (Blue Team) — `ip a`:**
+
+![ip a ubuntu](images/ip%20a%20ubuntu.png)
+
+**Kali Linux (Red Team) — `ip a`:**
+
+![ip a kali](images/ip%20a%20kali.png)
 
 ---
 
@@ -105,7 +111,21 @@ hydra -l johanes -P ~/wordlist.txt ssh://192.168.56.10 -t 4 -vV
 - SSH auth.log confirmed the session was opened and closed (Hydra verified the credential and disconnected)
 
 **Evidence**:
-(images)
+![ssh brute force 1](images/ssh%20bruteforce%201.jpeg)
+
+![ssh brute force 2](images/ssh%20bruteforce%202.jpeg)
+
+those two images shows that even though it is detected (image 1), it will still allow login (image 2)
+
+Accepted password for johanes from 192.168.56.4 port 46902 ssh2
+pam_unix(sshd:session): session opened for user johanes(uid=1000)
+pam_unix(sshd:session): session closed for user johanes
+
+![ssh brute force 3](images/ssh%20bruteforce%203.png)
+
+![ssh brute force 4](images/ssh%20bruteforce%204.png)
+
+It detects well, but still allows ssh login, after multiple attempt.
 
 ### Analysis
 The attack exposed a timing gap in GoGuard's enforcement. The IPS operates on a 1-second ticker for flood detection, meaning up to 1 second of traffic can pass before a ban is applied. Hydra's `-t 4` thread count generates enough connection volume to trigger detection, but the correct password was found and authenticated within that detection window.
@@ -159,7 +179,11 @@ sudo hping3 -S --flood -V -p 22 192.168.56.10
 - GoGuard began dropping all subsequent packets from the attacker IP
 
 **Evidence**:
-images
+![syn flood detected 1](images/syn%20flood%20detected.jpeg)
+
+![syn flood detected 2](images/syn%20flood%20detected2.png)
+
+High rate activity successfully detected (image 1) and packets dropped since ip from kali is banned
 
 ### Analysis:
 The SYN flood detection worked effectively. The 1-second ticker in `detectFlooding()` provided near-real-time response. The ban duration of 60 seconds was sufficient to interrupt the attack window.
