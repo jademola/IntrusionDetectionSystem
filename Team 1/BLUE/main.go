@@ -36,6 +36,34 @@ var dangerZone = []string{
 	"admin", "password", "login", // Credential Hunting
 }
 
+// Longest keyword length, used for sliding window in flow reassembly
+var maxKeywordLen int
+
+func init() {
+	for _, kw := range dangerZone {
+		if len(kw) > maxKeywordLen {
+			maxKeywordLen = len(kw)
+		}
+	}
+}
+
+// FlowKey uniquely identifies a TCP connection by its 4-tuple
+type FlowKey struct {
+	SrcIP   string
+	DstIP   string
+	SrcPort uint16
+	DstPort uint16
+}
+
+// FlowBuffer tracks the accumulated payload for a single TCP flow
+type FlowBuffer struct {
+	Payload  []byte
+	LastSeen time.Time
+}
+
+var tcpFlows = make(map[FlowKey]*FlowBuffer)
+var flowsMu sync.Mutex
+
 //----- Defense Functions -----
 
 func detectFlood(src string) bool {
@@ -193,6 +221,75 @@ func inspectPayload(src string, data []byte, logFile *os.File) {
 	}
 }
 
+// reassembleAndInspectTCP accumulates TCP payloads per flow and runs DPI
+// against a sliding window of the concatenated buffer. This catches attacks
+// that split malicious keywords across multiple packets (fragmentation evasion).
+func reassembleAndInspectTCP(packet gopacket.Packet, src string, dstIP string, logFile *os.File) bool {
+	tcpLayer := packet.Layer(layers.LayerTypeTCP)
+	if tcpLayer == nil {
+		return false
+	}
+	tcp := tcpLayer.(*layers.TCP)
+	if len(tcp.Payload) == 0 {
+		return false
+	}
+
+	key := FlowKey{
+		SrcIP:   src,
+		DstIP:   dstIP,
+		SrcPort: uint16(tcp.SrcPort),
+		DstPort: uint16(tcp.DstPort),
+	}
+
+	flowsMu.Lock()
+	defer flowsMu.Unlock()
+
+	flow, exists := tcpFlows[key]
+	if !exists {
+		flow = &FlowBuffer{}
+		tcpFlows[key] = flow
+	}
+	flow.Payload = append(flow.Payload, tcp.Payload...)
+	flow.LastSeen = time.Now()
+
+	// Scan the trailing window (last maxKeywordLen bytes) for danger keywords.
+	// This catches keywords that were split across packet boundaries.
+	buf := flow.Payload
+	start := 0
+	if len(buf) > maxKeywordLen {
+		start = len(buf) - maxKeywordLen
+	}
+	window := strings.ToUpper(string(buf[start:]))
+
+	for _, keyword := range dangerZone {
+		if strings.Contains(window, strings.ToUpper(keyword)) {
+			timestamp := time.Now().Format("15:04:05.999999")
+			alertMsg := fmt.Sprintf("[%s] !!! DPI ALERT (reassembled): Keyword '%s' detected from %s\n",
+				timestamp, keyword, src)
+			fmt.Print(alertMsg)
+			if logFile != nil {
+				logFile.WriteString(alertMsg)
+			}
+			executeBan(src, 1, "DPI_THREAT")
+			delete(tcpFlows, key)
+			return true
+		}
+	}
+	return false
+}
+
+// cleanupFlows removes flow buffers that have been idle for more than 30 seconds
+func cleanupFlows() {
+	flowsMu.Lock()
+	defer flowsMu.Unlock()
+	cutoff := time.Now().Add(-30 * time.Second)
+	for key, flow := range tcpFlows {
+		if flow.LastSeen.Before(cutoff) {
+			delete(tcpFlows, key)
+		}
+	}
+}
+
 func monitorSystemStats() {
 	// 1. Setup Directories
 	_ = os.MkdirAll("flags", 0755)
@@ -243,6 +340,9 @@ func monitorSystemStats() {
 			atomic.SwapUint64(value.(*uint64), 0)
 			return true
 		})
+
+		// Clean up stale TCP flow buffers to prevent memory exhaustion
+		cleanupFlows()
 
 		// 4. Dashboard Reporting
 		// Global throughput pulse
@@ -353,9 +453,10 @@ func main() {
 			continue
 		}
 
-		// Step 5: Deep Packet Inspection for malicious keywords
+		// Step 5: Deep Packet Inspection with TCP flow reassembly
+		// Buffers payloads per flow to detect keywords split across packets
 		if ip.DstIP.String() == dstIP {
-			processDPI(packet, src, f)
+			reassembleAndInspectTCP(packet, src, dstIP, f)
 		}
 
 		// Step 6: Record the activity
