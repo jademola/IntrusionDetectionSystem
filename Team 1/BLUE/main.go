@@ -211,6 +211,23 @@ func applyFilters(handle *pcap.Handle) {
 	fmt.Println("Network filters active: Host Noise, and Multicast ignored.")
 }
 
+// arpLookupByMAC scans /proc/net/arp for the IP the kernel associates with
+// the given MAC. The kernel populates this from real ARP traffic, so it
+// cannot be poisoned by our application state.
+func arpLookupByMAC(mac string) string {
+	data, err := os.ReadFile("/proc/net/arp")
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n")[1:] { // skip header
+		fields := strings.Fields(line)
+		if len(fields) >= 4 && strings.EqualFold(fields[3], mac) {
+			return fields[0]
+		}
+	}
+	return ""
+}
+
 // checkMACIPBinding detects IP spoofing using two cross-referenced maps:
 //  1. macIPBinding (IP → MAC): if an IP arrives with a different MAC than
 //     previously learned, the IP is forged.
@@ -221,51 +238,56 @@ func applyFilters(handle *pcap.Handle) {
 // When a spoof is confirmed the real attacker's IP is banned.
 // Returns true if spoofing was detected (caller should drop the packet).
 func checkMACIPBinding(packet gopacket.Packet, srcIP string, logFile *os.File) bool {
-	ethLayer := packet.Layer(layers.LayerTypeEthernet)
-	if ethLayer == nil {
-		return false
-	}
-	eth := ethLayer.(*layers.Ethernet)
-	srcMAC := eth.SrcMAC.String()
+    ethLayer := packet.Layer(layers.LayerTypeEthernet)
+    if ethLayer == nil {
+        return false
+    }
+    eth := ethLayer.(*layers.Ethernet)
+    srcMAC := eth.SrcMAC.String()
 
-	// Ignore broadcast / unset MACs
-	if srcMAC == "ff:ff:ff:ff:ff:ff" || srcMAC == "00:00:00:00:00:00" {
-		return false
-	}
+    if srcMAC == "ff:ff:ff:ff:ff:ff" || srcMAC == "00:00:00:00:00:00" {
+        return false
+    }
 
-	spoofDetected := false
-	realAttackerIP := ""
+    // Only learn MAC bindings from SYN packets
+    // This prevents spoofed PA packets from poisoning the table
+    tcpLayer := packet.Layer(layers.LayerTypeTCP)
+    isSYN := false
+    if tcpLayer != nil {
+        tcp := tcpLayer.(*layers.TCP)
+        isSYN = tcp.SYN && !tcp.ACK
+    }
 
-	// Use Load (not LoadOrStore) so that spoofed packets never pollute the maps.
-	// We only Store after confirming the packet is clean (at the end of the function).
+    spoofDetected := false
+    realAttackerIP := ""
 
-	// Check 1 — MAC → IP reverse lookup:
-	// If this MAC was previously seen with a different IP, the current srcIP is forged.
-	// The real attacker is the IP we already associated with this MAC.
-	if existingIP, ipKnown := macToIP.Load(srcMAC); ipKnown && existingIP.(string) != srcIP {
-		spoofDetected = true
-		realAttackerIP = existingIP.(string)
-	}
+    if existingIP, ipKnown := macToIP.Load(srcMAC); ipKnown && existingIP.(string) != srcIP {
+        spoofDetected = true
+        realAttackerIP = existingIP.(string)
+    }
 
-	// Check 2 — IP → MAC forward lookup:
-	// If this IP was previously seen with a different MAC, the source is also suspicious.
-	if existingMAC, macKnown := macIPBinding.Load(srcIP); macKnown && existingMAC.(string) != srcMAC {
-		spoofDetected = true
-		// If Check 1 didn't resolve the real IP, try a reverse lookup on the incoming MAC.
-		if realAttackerIP == "" {
-			if realIP, ok := macToIP.Load(srcMAC); ok {
-				realAttackerIP = realIP.(string)
-			}
-		}
-	}
+    if existingMAC, macKnown := macIPBinding.Load(srcIP); macKnown && existingMAC.(string) != srcMAC {
+        spoofDetected = true
+        if realAttackerIP == "" {
+            if realIP, ok := macToIP.Load(srcMAC); ok {
+                realAttackerIP = realIP.(string)
+            }
+        }
+    }
 
-	if !spoofDetected {
-		// Packet is clean — record the MAC/IP association for future checks.
-		macToIP.Store(srcMAC, srcIP)
-		macIPBinding.Store(srcIP, srcMAC)
-		return false
-	}
+    if !spoofDetected {
+        // Only record binding from legitimate SYN packets
+        if isSYN {
+            macToIP.Store(srcMAC, srcIP)
+            macIPBinding.Store(srcIP, srcMAC)
+        }
+        return false
+    }
 
+    // Use kernel ARP table as ground truth — cannot be poisoned by app state
+    if arpIP := arpLookupByMAC(srcMAC); arpIP != "" && arpIP != srcIP {
+        realAttackerIP = arpIP
+    }
 	timestamp := time.Now().Format("15:04:05.999999")
 	alertMsg := fmt.Sprintf(
 		"[%s] !!! SPOOF DETECTED: forged src IP=%s (victim), real sender MAC=%s → IP=%s\n",
