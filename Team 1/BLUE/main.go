@@ -236,23 +236,33 @@ func checkMACIPBinding(packet gopacket.Packet, srcIP string, logFile *os.File) b
 	spoofDetected := false
 	realAttackerIP := ""
 
+	// Use Load (not LoadOrStore) so that spoofed packets never pollute the maps.
+	// We only Store after confirming the packet is clean (at the end of the function).
+
 	// Check 1 — MAC → IP reverse lookup:
 	// If this MAC was previously seen with a different IP, the current srcIP is forged.
 	// The real attacker is the IP we already associated with this MAC.
-	existingIP, ipKnown := macToIP.LoadOrStore(srcMAC, srcIP)
-	if ipKnown && existingIP.(string) != srcIP {
+	if existingIP, ipKnown := macToIP.Load(srcMAC); ipKnown && existingIP.(string) != srcIP {
 		spoofDetected = true
 		realAttackerIP = existingIP.(string)
 	}
 
 	// Check 2 — IP → MAC forward lookup:
 	// If this IP was previously seen with a different MAC, the source is also suspicious.
-	existingMAC, macKnown := macIPBinding.LoadOrStore(srcIP, srcMAC)
-	if macKnown && existingMAC.(string) != srcMAC {
+	if existingMAC, macKnown := macIPBinding.Load(srcIP); macKnown && existingMAC.(string) != srcMAC {
 		spoofDetected = true
+		// If Check 1 didn't resolve the real IP, try a reverse lookup on the incoming MAC.
+		if realAttackerIP == "" {
+			if realIP, ok := macToIP.Load(srcMAC); ok {
+				realAttackerIP = realIP.(string)
+			}
+		}
 	}
 
 	if !spoofDetected {
+		// Packet is clean — record the MAC/IP association for future checks.
+		macToIP.Store(srcMAC, srcIP)
+		macIPBinding.Store(srcIP, srcMAC)
 		return false
 	}
 
