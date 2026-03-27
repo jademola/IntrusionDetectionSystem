@@ -230,6 +230,7 @@ func reassembleAndInspectTCP(packet gopacket.Packet, src string, dstIP string, l
 		return false
 	}
 	tcp := tcpLayer.(*layers.TCP)
+	fmt.Printf("DEBUG TCP: src=%s payload_len=%d payload=%q\n", src, len(tcp.Payload), string(tcp.Payload))
 	if len(tcp.Payload) == 0 {
 		return false
 	}
@@ -254,12 +255,7 @@ func reassembleAndInspectTCP(packet gopacket.Packet, src string, dstIP string, l
 
 	// Scan the trailing window (last maxKeywordLen bytes) for danger keywords.
 	// This catches keywords that were split across packet boundaries.
-	buf := flow.Payload
-	start := 0
-	if len(buf) > maxKeywordLen {
-		start = len(buf) - maxKeywordLen
-	}
-	window := strings.ToUpper(string(buf[start:]))
+	window := strings.ToUpper(string(flow.Payload))
 
 	for _, keyword := range dangerZone {
 		if strings.Contains(window, strings.ToUpper(keyword)) {
@@ -376,9 +372,9 @@ func monitorSystemStats() {
 // 3. The Main Function (The entry point)
 func main() {
 	fmt.Println("GoGuard IPS: Defender Node is starting...")
-	fmt.Println("Interface: enp0s8 (Target)")
+	fmt.Println("Interface: enp0s9 (Target)")
 
-	ifacePtr := flag.String("iface", "enp0s8", "The network interface to sniff on")
+	ifacePtr := flag.String("iface", "enp0s9", "The network interface to sniff on")
 
 	flag.Parse()
 
@@ -386,7 +382,7 @@ func main() {
 	snapshotLen := int32(1024)
 	promiscuous := true
 	timeout := 100 * time.Millisecond
-	dstIP := "192.168.56.102" //Change to your Ubuntu IP
+	dstIP := "192.168.56.10" //Change to your Ubuntu IP
 
 	//open device for packet sniffing (local host network, packetsize, promiscuous mode, )
 	handle, err := pcap.OpenLive(device, snapshotLen, promiscuous, timeout)
@@ -455,6 +451,7 @@ func main() {
 
 		// Step 5: Deep Packet Inspection with TCP flow reassembly
 		// Buffers payloads per flow to detect keywords split across packets
+		fmt.Printf("Debug: dst=%s, dstIP=%s, match=%v\n", ip.DstIP.String(), dstIP, ip.DstIP.String()==dstIP)
 		if ip.DstIP.String() == dstIP {
 			reassembleAndInspectTCP(packet, src, dstIP, f)
 		}
