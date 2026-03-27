@@ -55,14 +55,29 @@ type FlowKey struct {
 	DstPort uint16
 }
 
+// TCPState tracks the handshake progress of a TCP flow
+type TCPState uint8
+
+const (
+	TCPStateNone        TCPState = 0 // No packets seen yet
+	TCPStateSYNSeen     TCPState = 1 // SYN received, waiting for ACK
+	TCPStateEstablished TCPState = 2 // Handshake complete
+)
+
 // FlowBuffer tracks the accumulated payload for a single TCP flow
 type FlowBuffer struct {
 	Payload  []byte
 	LastSeen time.Time
+	State    TCPState // handshake state for spoof detection
 }
 
 var tcpFlows = make(map[FlowKey]*FlowBuffer)
 var flowsMu sync.Mutex
+
+// macIPBinding stores the first-seen MAC address for each source IP.
+// Used to detect IP spoofing: if an IP arrives with a different MAC than
+// what was learned, the source IP is likely forged.
+var macIPBinding sync.Map // map[string]string  (IP → MAC)
 
 //----- Defense Functions -----
 
@@ -194,6 +209,44 @@ func applyFilters(handle *pcap.Handle) {
 	fmt.Println("Network filters active: Host Noise, and Multicast ignored.")
 }
 
+// checkMACIPBinding validates that the Ethernet source MAC for the given IP
+// matches what was previously learned. On first sight the MAC is recorded.
+// Returns true if a MAC/IP mismatch is detected (likely IP spoofing).
+func checkMACIPBinding(packet gopacket.Packet, srcIP string, logFile *os.File) bool {
+	ethLayer := packet.Layer(layers.LayerTypeEthernet)
+	if ethLayer == nil {
+		return false
+	}
+	eth := ethLayer.(*layers.Ethernet)
+	srcMAC := eth.SrcMAC.String()
+
+	// Ignore broadcast / unset MACs
+	if srcMAC == "ff:ff:ff:ff:ff:ff" || srcMAC == "00:00:00:00:00:00" {
+		return false
+	}
+
+	existing, loaded := macIPBinding.LoadOrStore(srcIP, srcMAC)
+	if loaded && existing.(string) != srcMAC {
+		timestamp := time.Now().Format("15:04:05.999999")
+		alertMsg := fmt.Sprintf(
+			"[%s] !!! MAC SPOOF ALERT: IP %s claimed by MAC %s but previously seen from %s\n",
+			timestamp, srcIP, srcMAC, existing.(string),
+		)
+		fmt.Print(alertMsg)
+		if logFile != nil {
+			logFile.WriteString(alertMsg)
+		}
+		broadcast <- Alert{
+			Timestamp: timestamp,
+			Source:    srcIP,
+			Message:   fmt.Sprintf("MAC mismatch: got %s, expected %s", srcMAC, existing.(string)),
+			Type:      "SPOOF_DETECTED",
+		}
+		return true
+	}
+	return false
+}
+
 func inspectPayload(src string, data []byte, logFile *os.File) {
 	// Convert binary payload to string for searching
 	payload := string(data)
@@ -231,9 +284,6 @@ func reassembleAndInspectTCP(packet gopacket.Packet, src string, dstIP string, l
 	}
 	tcp := tcpLayer.(*layers.TCP)
 	fmt.Printf("DEBUG TCP: src=%s payload_len=%d payload=%q\n", src, len(tcp.Payload), string(tcp.Payload))
-	if len(tcp.Payload) == 0 {
-		return false
-	}
 
 	key := FlowKey{
 		SrcIP:   src,
@@ -247,9 +297,50 @@ func reassembleAndInspectTCP(packet gopacket.Packet, src string, dstIP string, l
 
 	flow, exists := tcpFlows[key]
 	if !exists {
-		flow = &FlowBuffer{}
+		flow = &FlowBuffer{State: TCPStateNone}
 		tcpFlows[key] = flow
 	}
+	flow.LastSeen = time.Now()
+
+	// --- TCP State Machine ---
+	// Update handshake state based on flags (must happen before payload check
+	// so SYN-only packets, which carry no payload, still advance the state).
+	switch {
+	case tcp.SYN && !tcp.ACK:
+		flow.State = TCPStateSYNSeen
+	case tcp.ACK && flow.State == TCPStateSYNSeen:
+		flow.State = TCPStateEstablished
+	}
+
+	if len(tcp.Payload) == 0 {
+		return false
+	}
+
+	// --- Stateless Data Detection ---
+	// A data-bearing packet that arrived without a prior SYN is a strong
+	// indicator of IP spoofing (attacker forged src IP, never did handshake).
+	// We log and discard rather than banning the claimed source IP, because
+	// that IP is the victim being framed.
+	if flow.State == TCPStateNone {
+		timestamp := time.Now().Format("15:04:05.999999")
+		alertMsg := fmt.Sprintf(
+			"[%s] !!! SPOOF ALERT: Data from %s (flags SYN=%v ACK=%v PSH=%v) with no prior handshake — dropping without ban\n",
+			timestamp, src, tcp.SYN, tcp.ACK, tcp.PSH,
+		)
+		fmt.Print(alertMsg)
+		if logFile != nil {
+			logFile.WriteString(alertMsg)
+		}
+		broadcast <- Alert{
+			Timestamp: timestamp,
+			Source:    src,
+			Message:   "Stateless data packet — IP spoofing likely",
+			Type:      "SPOOF_DETECTED",
+		}
+		delete(tcpFlows, key)
+		return true
+	}
+
 	flow.Payload = append(flow.Payload, tcp.Payload...)
 	flow.LastSeen = time.Now()
 
@@ -433,6 +524,12 @@ func main() {
 
 		// Step 1: Check if already banned
 		if isBlacklisted(src) {
+			continue
+		}
+
+		// Step 1.5: MAC-IP binding check — drop spoofed packets without
+		// banning the claimed source IP (which is the innocent victim).
+		if checkMACIPBinding(packet, src, f) {
 			continue
 		}
 
