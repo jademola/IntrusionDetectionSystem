@@ -289,8 +289,15 @@ func checkMACIPBinding(packet gopacket.Packet, srcIP string, logFile *os.File) b
 	}
 
 	// Ban the real attacker, not the victim whose IP was forged.
+	// Guard against re-banning: the spoofed srcIP bypasses the blacklist check
+	// in the main loop, so we must check here whether the real attacker is
+	// already banned before calling executeBan again.
 	if realAttackerIP != "" {
-		executeBan(realAttackerIP, 1, "IP_SPOOF")
+		if _, alreadyBanned := blacklist.Load(realAttackerIP); !alreadyBanned {
+			executeBan(realAttackerIP, 1, "IP_SPOOF")
+		} else {
+			fmt.Printf("Spoofed packet dropped (real sender %s already banned)\n", realAttackerIP)
+		}
 	}
 
 	return true
