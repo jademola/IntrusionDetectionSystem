@@ -268,13 +268,9 @@ func checkMACIPBinding(packet gopacket.Packet, srcIP string, logFile *os.File) b
 
 	timestamp := time.Now().Format("15:04:05.999999")
 	alertMsg := fmt.Sprintf(
-		"[%s] !!! SPOOF DETECTED: IP %s arrived from MAC %s",
-		timestamp, srcIP, srcMAC,
+		"[%s] !!! SPOOF DETECTED: forged src IP=%s (victim), real sender MAC=%s → IP=%s\n",
+		timestamp, srcIP, srcMAC, realAttackerIP,
 	)
-	if realAttackerIP != "" {
-		alertMsg += fmt.Sprintf(" (real sender: %s)", realAttackerIP)
-	}
-	alertMsg += "\n"
 
 	fmt.Print(alertMsg)
 	if logFile != nil {
@@ -283,8 +279,8 @@ func checkMACIPBinding(packet gopacket.Packet, srcIP string, logFile *os.File) b
 
 	broadcast <- Alert{
 		Timestamp: timestamp,
-		Source:    srcIP,
-		Message:   fmt.Sprintf("Spoofed packet dropped. Real attacker: %s", realAttackerIP),
+		Source:    realAttackerIP,
+		Message:   fmt.Sprintf("IP spoofing: forged src=%s (victim). Real sender banned.", srcIP),
 		Type:      "SPOOF_DETECTED",
 	}
 
