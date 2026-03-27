@@ -75,9 +75,11 @@ var tcpFlows = make(map[FlowKey]*FlowBuffer)
 var flowsMu sync.Mutex
 
 // macIPBinding stores the first-seen MAC address for each source IP.
-// Used to detect IP spoofing: if an IP arrives with a different MAC than
-// what was learned, the source IP is likely forged.
 var macIPBinding sync.Map // map[string]string  (IP → MAC)
+
+// macToIP is the reverse: first-seen IP for each MAC address.
+// This lets us identify the real sender when they forge a different source IP.
+var macToIP sync.Map // map[string]string  (MAC → IP)
 
 //----- Defense Functions -----
 
@@ -209,9 +211,15 @@ func applyFilters(handle *pcap.Handle) {
 	fmt.Println("Network filters active: Host Noise, and Multicast ignored.")
 }
 
-// checkMACIPBinding validates that the Ethernet source MAC for the given IP
-// matches what was previously learned. On first sight the MAC is recorded.
-// Returns true if a MAC/IP mismatch is detected (likely IP spoofing).
+// checkMACIPBinding detects IP spoofing using two cross-referenced maps:
+//  1. macIPBinding (IP → MAC): if an IP arrives with a different MAC than
+//     previously learned, the IP is forged.
+//  2. macToIP (MAC → IP): if a MAC arrives claiming a different IP than
+//     previously learned, the source IP is forged and the real attacker is
+//     the IP that was originally associated with that MAC.
+//
+// When a spoof is confirmed the real attacker's IP is banned.
+// Returns true if spoofing was detected (caller should drop the packet).
 func checkMACIPBinding(packet gopacket.Packet, srcIP string, logFile *os.File) bool {
 	ethLayer := packet.Layer(layers.LayerTypeEthernet)
 	if ethLayer == nil {
@@ -225,26 +233,57 @@ func checkMACIPBinding(packet gopacket.Packet, srcIP string, logFile *os.File) b
 		return false
 	}
 
-	existing, loaded := macIPBinding.LoadOrStore(srcIP, srcMAC)
-	if loaded && existing.(string) != srcMAC {
-		timestamp := time.Now().Format("15:04:05.999999")
-		alertMsg := fmt.Sprintf(
-			"[%s] !!! MAC SPOOF ALERT: IP %s claimed by MAC %s but previously seen from %s\n",
-			timestamp, srcIP, srcMAC, existing.(string),
-		)
-		fmt.Print(alertMsg)
-		if logFile != nil {
-			logFile.WriteString(alertMsg)
-		}
-		broadcast <- Alert{
-			Timestamp: timestamp,
-			Source:    srcIP,
-			Message:   fmt.Sprintf("MAC mismatch: got %s, expected %s", srcMAC, existing.(string)),
-			Type:      "SPOOF_DETECTED",
-		}
-		return true
+	spoofDetected := false
+	realAttackerIP := ""
+
+	// Check 1 — MAC → IP reverse lookup:
+	// If this MAC was previously seen with a different IP, the current srcIP is forged.
+	// The real attacker is the IP we already associated with this MAC.
+	existingIP, ipKnown := macToIP.LoadOrStore(srcMAC, srcIP)
+	if ipKnown && existingIP.(string) != srcIP {
+		spoofDetected = true
+		realAttackerIP = existingIP.(string)
 	}
-	return false
+
+	// Check 2 — IP → MAC forward lookup:
+	// If this IP was previously seen with a different MAC, the source is also suspicious.
+	existingMAC, macKnown := macIPBinding.LoadOrStore(srcIP, srcMAC)
+	if macKnown && existingMAC.(string) != srcMAC {
+		spoofDetected = true
+	}
+
+	if !spoofDetected {
+		return false
+	}
+
+	timestamp := time.Now().Format("15:04:05.999999")
+	alertMsg := fmt.Sprintf(
+		"[%s] !!! SPOOF DETECTED: IP %s arrived from MAC %s",
+		timestamp, srcIP, srcMAC,
+	)
+	if realAttackerIP != "" {
+		alertMsg += fmt.Sprintf(" (real sender: %s)", realAttackerIP)
+	}
+	alertMsg += "\n"
+
+	fmt.Print(alertMsg)
+	if logFile != nil {
+		logFile.WriteString(alertMsg)
+	}
+
+	broadcast <- Alert{
+		Timestamp: timestamp,
+		Source:    srcIP,
+		Message:   fmt.Sprintf("Spoofed packet dropped. Real attacker: %s", realAttackerIP),
+		Type:      "SPOOF_DETECTED",
+	}
+
+	// Ban the real attacker, not the victim whose IP was forged.
+	if realAttackerIP != "" {
+		executeBan(realAttackerIP, 1, "IP_SPOOF")
+	}
+
+	return true
 }
 
 func inspectPayload(src string, data []byte, logFile *os.File) {
