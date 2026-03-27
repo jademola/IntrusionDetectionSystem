@@ -317,14 +317,15 @@ func reassembleAndInspectTCP(packet gopacket.Packet, src string, dstIP string, l
 	}
 
 	// --- Stateless Data Detection ---
-	// A data-bearing packet that arrived without a prior SYN is a strong
-	// indicator of IP spoofing (attacker forged src IP, never did handshake).
-	// We log and discard rather than banning the claimed source IP, because
-	// that IP is the victim being framed.
+	// A data-bearing packet with no prior SYN could be a raw injection attack
+	// (e.g. frag attack from the real attacker) or IP spoofing. We log it but
+	// still continue to DPI so the payload is inspected and the real attacker
+	// can be banned. True IP spoofing (MAC mismatch) is caught earlier by
+	// checkMACIPBinding before this function is ever reached.
 	if flow.State == TCPStateNone {
 		timestamp := time.Now().Format("15:04:05.999999")
 		alertMsg := fmt.Sprintf(
-			"[%s] !!! SPOOF ALERT: Data from %s (flags SYN=%v ACK=%v PSH=%v) with no prior handshake — dropping without ban\n",
+			"[%s] !!! STATELESS INJECTION: Data from %s (flags SYN=%v ACK=%v PSH=%v) with no prior handshake\n",
 			timestamp, src, tcp.SYN, tcp.ACK, tcp.PSH,
 		)
 		fmt.Print(alertMsg)
@@ -334,11 +335,11 @@ func reassembleAndInspectTCP(packet gopacket.Packet, src string, dstIP string, l
 		broadcast <- Alert{
 			Timestamp: timestamp,
 			Source:    src,
-			Message:   "Stateless data packet — IP spoofing likely",
-			Type:      "SPOOF_DETECTED",
+			Message:   "Stateless data packet — raw injection detected",
+			Type:      "STATELESS_INJECTION",
 		}
-		delete(tcpFlows, key)
-		return true
+		// Do NOT return — fall through to DPI so the payload is still inspected
+		// and the attacker can be identified and banned.
 	}
 
 	flow.Payload = append(flow.Payload, tcp.Payload...)
