@@ -253,26 +253,39 @@ func checkMACIPBinding(packet gopacket.Packet, srcIP string, logFile *os.File) b
 	spoofDetected := false
 	realAttackerIP := ""
 
-	// Use Load (not LoadOrStore) so that spoofed packets never pollute the maps.
-	// We only Store after confirming the packet is clean (at the end of the function).
-
-	// Check 1 — MAC → IP reverse lookup:
-	// If this MAC was previously seen with a different IP, the current srcIP is forged.
-	// The real attacker is the IP we already associated with this MAC.
-	if existingIP, ipKnown := macToIP.Load(srcMAC); ipKnown && existingIP.(string) != srcIP {
-		spoofDetected = true
-		realAttackerIP = existingIP.(string)
+	// ARP check — most authoritative, runs first.
+	// The kernel populates /proc/net/arp from real ARP traffic; it cannot be
+	// poisoned by our application state.
+	//
+	// Two outcomes:
+	//   arpIP != srcIP  → ARP confirms this MAC belongs to a different host →
+	//                     srcIP is forged; real attacker = arpIP.
+	//   arpIP == srcIP  → ARP confirms this MAC legitimately belongs to srcIP →
+	//                     packet is clean even if our learned maps say otherwise
+	//                     (maps may be poisoned by a prior spoofed packet).
+	arpIP := arpLookupByMAC(srcMAC)
+	if arpIP != "" {
+		if arpIP != srcIP {
+			spoofDetected = true
+			realAttackerIP = arpIP
+		} else {
+			// ARP confirms legitimacy — trust it over the learned maps,
+			// correct any poisoned entries, and return clean.
+			macToIP.Store(srcMAC, srcIP)
+			macIPBinding.Store(srcIP, srcMAC)
+			return false
+		}
 	}
 
-	// Check 2 — IP → MAC forward lookup:
-	// If this IP was previously seen with a different MAC, the source is also suspicious.
-	if existingMAC, macKnown := macIPBinding.Load(srcIP); macKnown && existingMAC.(string) != srcMAC {
-		spoofDetected = true
-		// If Check 1 didn't resolve the real IP, try a reverse lookup on the incoming MAC.
-		if realAttackerIP == "" {
-			if realIP, ok := macToIP.Load(srcMAC); ok {
-				realAttackerIP = realIP.(string)
-			}
+	// Learned map checks — fallback when ARP has no entry for this MAC yet.
+	// Use Load (not LoadOrStore) so spoofed packets never pollute the maps.
+	if !spoofDetected {
+		if existingIP, ipKnown := macToIP.Load(srcMAC); ipKnown && existingIP.(string) != srcIP {
+			spoofDetected = true
+			realAttackerIP = existingIP.(string)
+		}
+		if existingMAC, macKnown := macIPBinding.Load(srcIP); macKnown && existingMAC.(string) != srcMAC {
+			spoofDetected = true
 		}
 	}
 
@@ -281,13 +294,6 @@ func checkMACIPBinding(packet gopacket.Packet, srcIP string, logFile *os.File) b
 		macToIP.Store(srcMAC, srcIP)
 		macIPBinding.Store(srcIP, srcMAC)
 		return false
-	}
-
-	// Resolve the real attacker IP. Use the kernel ARP table as the primary
-	// source — it reflects actual ARP traffic and cannot be poisoned by our
-	// learned maps (which may have been corrupted by a prior spoofed packet).
-	if arpIP := arpLookupByMAC(srcMAC); arpIP != "" && arpIP != srcIP {
-		realAttackerIP = arpIP
 	}
 
 	timestamp := time.Now().Format("15:04:05.999999")
