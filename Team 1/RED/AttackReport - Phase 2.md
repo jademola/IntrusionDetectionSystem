@@ -5,20 +5,21 @@
 ## 1. Executive Summary
 The objective of this engagement was to evaluate the effectiveness of the GoGuard Intrusion Prevention System (IPS) in detecting and mitigating high-severity network attacks in real time. Two attacks scenarios were executed from an isolated Red Team virtual machine targeting the Blue Team's Ubuntu Server running goguard. 
 
-- **Credential Access Attack** (SSH Brute Force using Hydra)
-- **Availability Attack** (SYN Flood / Denial of Service using hping3)
+- **Packet Fragmentation** scapy with split packets via `Python` script
+- **IP Spoofing Attack** scapy with dangerous text via `Python` script
 
-These attacks simulate realistic adversarial behavior targeting both **authentication mechanisms** and **system availability**. The evaluation focused on:
+These attacks simulate realistic adversarial behavior attempting to bypass the Guard by deceiving the receivers. The evaluation focused on:
 - Detection accuracy  
 - Response time  
 - Effectiveness of automated mitigation (iptables enforcement)
 
-The evaluation focused on detection accuracy response time, and the effectiveness of automated mitigation via iptables enforcement. Both attacks were successfully executed and partially detected. A critical gap was identified: while the SYN flood was detected and the attacker IP banned, the SSH brute force resulted in a successful authenticated login despite detection being active, demonstrating that **detection alone does not constitute prevention**
+The evaluation focused on detection accuracy response time, and the effectiveness of automated mitigation via iptables enforcement. Both attacks were successfully executed and partially detected. A critical gap was identified: while the banlist works as expected, there is no mitigation if an attacker continues to attack as packets are dropped. An attack can continue while being on the banlist with no consequence or further lengthening of the ban. This means a DDos or flooding attack can continue in waves between being banned.
 
 | Attack Vector | Tool | Outcome | IPS Response |
 |---|---|---|---|
-| SSH Brute Force | Hydra | Valid password found; login succeeded | Detected — login not blocked |
-| SYN Flood (DoS) | hping3 | 500+ pkt/s flood triggered alert | Detected + IP banned |
+| Packet Splitting | scapy | DPI alert triggered by partitioned payload | Detected + IP blocked |
+| IP Spoofing | scapy | DPI alert triggered by `SELECT ` in payload | Detected + IP banned |
+| Repeat Packet Flooding | `Python` socket | Initial ban, but allowed to pass after secondary attempt | Detected + IP banned only once |
 
 ---
 
@@ -30,19 +31,16 @@ The evaluation focused on detection accuracy response time, and the effectivenes
 - Ubuntu VM (Blue Team / target)
 - Root/sudo privileges
 - Tools:
-  - Hydra
-  - hping3
-  - modified rockyou.txt wordlist
+  - python3
 - Reachable target IP
 - Open port (e.g., SSH on port 22)
-- Password wordlist (e.g., `rockyou.txt`)
 
 ### 2.2 Network Topology
 
 | Role | OS | IP Address | Interface |
 |---|---|---|---|
-| Red Team (Attacker) | Kali Linux | 192.168.56.4 | eth1 (Host-Only) |
-| Blue Team (Defender) | Ubuntu Server | 192.168.56.10 | enp0s9 (Host-Only) |
+| Red Team (Attacker) | Kali Linux | 192.168.56.x | eth1 (Host-Only) |
+| Blue Team (Defender) | Ubuntu Server | 192.168.56.x | enp0s9 (Host-Only) |
 
 Both VMs were connected via a VirtualBox Host-Only network (192.168.56.0/24), completely isolated from the university network. GoGuard was configured to monitor the `enp0s9` interface specifically.
 
@@ -60,109 +58,116 @@ Both VMs were connected via a VirtualBox Host-Only network (192.168.56.0/24), co
 
 ---
 
-## 3.1 Attack 1: SSH Brute Force (Credential Access)
+## 3.1 Attack 1: Packet Fragmentation (DPI Avoidance)
 
 ### Objective
-Simulate unauthorized access attempts by systematically guessing SSH passwords using a known wordlist. The goal was to determine whether GoGuard could detect abnormal authentication patterns and block the attacker before a valid credential was found.
+Evaluate GoGuard's Deep Packet Inspection (DPI) capabilities by splitting a malicious payload across multiple small TCP fragments. The goal is to determine if the IPS can reassemble or correlate fragmented traffic to identify forbidden strings, or if the "signature" can bypass detection by being partitioned.
 
 ### Rationale
-SSH Brute Force is one of the most prevalent real-world attack vectors against internet-facing Linux servers. Automated tools like Hydra can attempt hundreds of passwords per minute against the SSH daemon on port 22. A capable IPS should detect the high frequency of failed authentication attempts — characterized by repeated TCP SYN/ACK sequences on port 22 that do not result in sustained data transfer — and automatically ban the source IP before a successful login occurs.
+Most signature-based IDS/IPS solutions perform DPI on individual packets. By using tools like Scapy to fragment a single application-layer message (e.g., an SQL injection string or a restricted command) into multiple IP or TCP segments, an attacker can ensure that no single packet contains the full malicious signature. This tests whether GoGuard effectively buffers and reassembles streams before inspection or if it relies on per-packet matching, which is vulnerable to fragmentation-based evasion.
 
-This attack specifically tests GoGuard's per-IP packet rate tracking and its ability to correlate repeated connection failures into a coherent threat signal.
 
 ### Execution
 
-**Wordlist preparation**
-A custom wordlist was created by taking the first 100 entries from rockyou.txt and appending the correct target password at the end, ensuring Hydra would make enough failed attempts to trigger detection before finding the valid credential:
+**Split Packets**
+A custom script was made which separated the `SELECT` keyword across multiple packets.
 
-```bash
-head -100 /usr/share/wordlists/rockyou.txt > ~/wordlist.txt
-echo 'TARGET_PASSWORD' >> ~/wordlist.txt
+```python
+# 1. The first half: "SEL"
+# We manually set the Sequence Number (seq) to keep the stream aligned
+packet1 = IP(src=src_ip, dst=target_ip) / \
+          TCP(sport=12345, dport=target_port, flags="PA", seq=1000) / \
+          Raw(load="SEL")
+
+# 2. The second half: "ECT * FROM users;"
+packet2 = IP(src=src_ip, dst=target_ip) / \
+          TCP(sport=12345, dport=target_port, flags="PA", seq=1003) / \
+          Raw(load="ECT * FROM users;")
 ```
 
 **Attack Command**
 ```bash
-hydra -l johanes -P ~/wordlist.txt ssh://192.168.56.10 -t 4 -vV
+cd IntrusionDetectionSystem/Team\ 1/RED
+sudo python3 frag_attack.py
 ```
 
 ### Parameters
-| Flag | Description |
-|---|---|
-| `-l johanes` | Target username — the known account on the Ubuntu machine |
-| `-P ~/wordlist.txt` | Custom wordlist with correct password at position 101 |
-| `ssh://192.168.56.10` | Target SSH service on Blue Team VM |
-| `-t 4` | 4 parallel threads — generates enough noise to trigger rate-based detection |
-| `-vV` | Verbose mode showing each attempt and result in real time |
+None needed. However may need to adjust configuration within the script:
+
+```py
+# Configuration
+target_ip = "192.168.56.x" # Ubuntu IP
+target_port = 22
+src_ip = "192.168.56.x" # Kali IP
+```
 
 ### IPS Detection Focus
-- High frequency SSH attempts  
-- Repeated failed logins  
-- Incomplete session establishment  
+- Irregular payload contents
+- Flagged keywords within packets
 
 ### Expected Defense
-- Detect abnormal login behavior  
+- Detect abnormal packet content  
 - Trigger alerts  
 - Block attacker IP via iptables  
 
 ### Results
-> ⚠️ **Critical Finding:** GoGuard detected the brute force activity but did NOT prevent the successful SSH login. The session was established despite active detection.
+> ⚠️ **Critical Finding:** GoGuard detected the packets but was not built to handle split packet payloads. The DPI is configured to match full keywords.
 
-- Hydra successfully iterated through 100+ incorrect passwords
-- GoGuard logged repeated connection attempts from 192.168.56.4
-- The correct password was found and Hydra reported a successful login
-- SSH auth.log confirmed the session was opened and closed (Hydra verified the credential and disconnected)
+- The script successfully avoided raising any alerts in the system.
+- There was no DPI match, IP banning or noteworthy logging other than received packets.
 
 **Evidence**:
-![ssh brute force 1](images/ssh%20bruteforce%201.jpeg)
+![packet splitting dashboard](./images2/packetSplitting.png)
 
-![ssh brute force 2](images/ssh%20bruteforce%202.jpeg)
 
-those two images shows that even though it is detected (image 1), it will still allow login (image 2)
+This image shows, that even though the system detected an uptick in packages received, there was no resulting alerts or IP bans.
 
-Accepted password for johanes from 192.168.56.4 port 46902 ssh2
-pam_unix(sshd:session): session opened for user johanes(uid=1000)
-pam_unix(sshd:session): session closed for user johanes
-
-![ssh brute force 3](images/ssh%20bruteforce%203.png)
-
-![ssh brute force 4](images/ssh%20bruteforce%204.png)
-
-It detects well, but still allows ssh login, after multiple attempt.
+The attack went by completely unnoticed.
 
 ### Analysis
-The attack exposed a timing gap in GoGuard's enforcement. The IPS operates on a 1-second ticker for flood detection, meaning up to 1 second of traffic can pass before a ban is applied. Hydra's `-t 4` thread count generates enough connection volume to trigger detection, but the correct password was found and authenticated within that detection window.
+The success of this attack shows that GoGuard scans packets **one at a time**. It looks for specific words like `SELECT` inside a single packet. By splitting the word into `SEL` and `ECT`, we broke the signature so it didn't match anything.
 
-Furthermore, GoGuard's in-memory blacklist blocks future packets from a banned IP but does not terminate an already-established TCP session. Once the SSH handshake completes, the session exists at the kernel level and GoGuard cannot retroactively close it. This is a fundamental limitation of application-layer IPS without kernel-level session management.
-
+The system does not currently put separate packets back together to see the full message. This means an attacker can bypass the filters simply by breaking their attack into smaller pieces. To fix this in Phase 2, the system needs a method in order to remember and group related packets before checking their signatures or payloads. Perhaps this could be done by flagging payloads with partial matches.
 
 ---
 
-## 3.2 Attack 2: SYN Flood (Availability Exhaustion)
+## 3.2 Attack 2: IP Spoofing (Banning Avoidance)
 
 ### Objective
-Simulate a Denial-of-Service (DoS) attack by flooding the target with SYN packets, exhausting its TCP connection table and making it unable to respond to legitimate traffic.
+Test if GoGuard can handle an attack where the source IP address is constantly changing. We want to see if the system's "per-IP" banning method is still effective when an attacker hides behind multiple fake addresses.
 
 ### Rationale
-SYN floods exploit TCP handshakes to exhaust server resources, preventing legitimate access. This evaluates:
-- Rate-based detection  
-- System resilience  
-- Mitigation effectiveness  
+GoGuard currently stops attacks by banning specific IP addresses for a period of time. By using IP spoofing to change the source address for every packet, an attacker can try to stay under the radar or make the banlist useless. This evaluates whether the system can detect a high volume of traffic coming from many different sources at once, rather than just one.
 
 ### Execution
-```bash
-sudo hping3 -S --flood -V -p 22 192.168.56.10
+```python
+for i in range(5):
+    ip_suffix = "20" + str(i)
+    victim_ip = "192.168.56."
+    victim_ip = victim_ip + ip_suffix
+    print(victim_ip)
+    # 'del' commands force Scapy to recalculate lengths and checksums automatically
+    pkt = IP(src=victim_ip, dst=target_ip) / \
+          TCP(sport=RandShort(), dport=target_port, flags="PA") / \
+          Raw(load="SELECT * FROM secret_database;")
+    
+    send(pkt, verbose=False)
+    print(f"Sent spoofed packet {i+1}...")
 ```
-- Randomizes source IP  
+- Increments source IP  
 - Simulates distributed attacks  
 - Tests IP-blocking limitations
 
 ### Parameters Explained
-| Flag | Description |
-|---|---|
-| `-S` | Sets only the SYN flag — simulates TCP handshake without completing it |
-| `--flood` | Sends packets as fast as possible with no delay |
-| `-V` | Verbose mode showing packet count and transmission statistics |
-| `-p 22` | Targets SSH port specifically |
+
+None needed. However may need to adjust configuration within the script:
+
+```py
+# Configuration
+victim_ip = "192.168.56." # Must be within HostOnly subnet
+target_ip = "192.168.56.x" # Ubuntu IP 
+target_port = 22
+```
 
 ### IPS Detection Focus
 - Spike in SYN packets  
@@ -170,27 +175,25 @@ sudo hping3 -S --flood -V -p 22 192.168.56.10
 - Traffic anomalies  
 
 ### Expected Defense
-- Rate-based detection  
+- DPI-based detection  
 - IP blocking (limited with random sources)  
 - Logging and alerting  
 
 ### Results
-- hping3 generated well over 500 SYN packets per second
-- GoGuard's `detectFlooding()` goroutine triggered the high-rate alert within 1 second
-- Attacker IP (192.168.56.4) was added to GoGuard's in-memory blacklist
-- GoGuard began dropping all subsequent packets from the attacker IP
+
 
 **Evidence**:
-![syn flood detected 1](images/syn%20flood%20detected.jpeg)
+![DPI detected dashboard](./images2/spoofingDashboard.png)
 
-![syn flood detected 2](images/syn%20flood%20detected2.png)
+![DPI detected kernel](./images2/spoofingKernel.png)
 
-High rate activity successfully detected (image 1) and packets dropped since ip from kali is banned
+
+High rate activity successfully detected across all IPs and packets dropped from any Ips identified in the spoof. 
 
 ### Analysis:
-The SYN flood detection worked effectively. The 1-second ticker in `detectFlooding()` provided near-real-time response. The ban duration of 60 seconds was sufficient to interrupt the attack window.
+The detection worked effectively and the system was still able to use DPI in order to identify malicious packets and IPs. GoGuard was not stressed by packets from multiple IPs.
 
-However, a key limitation was identified: the `--rand-source` flag was not used in this test. If randomized source IPs had been used, the per-IP ban would be completely ineffective since each packet would appear to originate from a different address — a realistic scenario in distributed denial-of-service (DDoS) attacks.
+However, this simulation was relatively calm and did not have a large amount of packets being disseminated toward the Ubuntu VM. If this had been simulated as multiple packets from each packet, the Guard may not have responded as strongly. Additionally, all the packets are sent in sequence and this may not be the behavior expected in a DDos-style attack.
 
 ---
 
@@ -198,40 +201,34 @@ However, a key limitation was identified: the `--rand-source` flag was not used 
 
 ### 4.1 Strengths of GoGuard
 
-- SYN flood detected within 1 second of attack onset via rate-based goroutine
-- Per-IP packet rate tracking correctly identified and banned 192.168.56.4
-- In-memory blacklist with 60-second expiry provided effective temporary blocking
-- Modular architecture (BPF filters, goroutines) allows targeted interface monitoring
-- Promiscuous mode packet capture ensures no traffic is missed on the monitored interface
+- **Effective Rate-Based Detection**: Successfully identified and banned high-volume traffic (SYN floods) within 1 second.
+- **DPI for Core Keywords**: Basic deep packet inspection effectively flagged forbidden strings (like `SELECT`) when sent in standard packets.
+- **Automated Mitigation**: The system correctly integrated with `iptables` to drop packets from identified attacker IPs.
+- **Efficient Design**: The use of BPF filters and concurrent goroutines allows for efficient, low-impact monitoring of system interfaces.
 
 ### 4.2 Identified Gaps
 
 | Gap | Description |
 |---|---|
-| BPF filter excluded port 22 | SSH attacks were completely invisible to GoGuard until the filter was manually corrected |
-| Detection ≠ Prevention | SSH brute force was detected but the successful login was not blocked |
-| Response time gap | The 1-second detection window allows credential validation to succeed before the ban is applied |
-| In-memory blacklist | Bans reset when GoGuard restarts — not persistent across sessions |
-| rand-source vulnerability | SYN floods with randomized source IPs bypass per-IP banning entirely |
-| Hardcoded dstIP | Destination IP for DPI was hardcoded to 192.168.56.102, requiring manual correction |
+| **Stateless DPI** | The system only scans individual packets and can be bypassed by splitting malicious text across multiple packets. |
+| **IP-Only Banning** | Bypassed by IP spoofing or randomized sources, as the system treats each fake IP as a new, non-banned visitor. |
+| **Volatile Banlist** | Since the blacklist is stored in memory, all active bans are lost if the GoGuard service is restarted. |
+| **No Session Termination** | Existing connections (like an already-open SSH session) are not closed even if the IP is later banned. |
 
 ---
 
 ## 5. Recommendations for Blue Team
 
-1. **Implement SSH session termination** — use iptables connection tracking (`conntrack`) to kill established sessions from banned IPs, not just block new packets
-2. **Enable SYN cookies** at the kernel level as a complement to application-layer detection: `sysctl -w net.ipv4.tcp_syncookies=1`
-3. **Persist iptables rules** using `iptables-save` so bans survive a GoGuard restart
-4. **Interface-level rate limiting** for rand-source flood mitigation, rather than per-IP banning
-5. **Remove port 22 from BPF exclusion** or add a dedicated SSH authentication failure rate monitor
-6. **Make dstIP dynamic** — detect it automatically from the interface rather than hardcoding
+1. **Implement Stateful Inspection**: Upgrade the DPI engine to buffer and reassemble packets so that split-payload attacks (fragmentation) can no longer bypass filters.
+2. **Behavioral Analysis for Spoofing**: Instead of just per-IP limits, implement global or interface-wide rate limits to catch floods coming from many "different" IP addresses.
+3. **Persistent Ban Storage**: Save the list of banned IPs to a file or database so that protections remain active after a system reboot or service restart.
+4. **Active Session Killing**: Use tools like `conntrack` to immediately terminate established TCP sessions once an IP is added to the blacklist.
 
 ---
 
 ## 6. Conclusion
+Phase 2 testing demonstrated that while GoGuard is a strong tool for stopping simple, high-volume attacks, it is still vulnerable to "smarter" evasion techniques. We successfully bypassed the system's defenses using packet fragmentation and IP spoofing, proving that scanning packets in isolation is not enough for modern security.
 
-Both attacks were successfully executed within the isolated lab environment. GoGuard demonstrated effective flood detection and automated IP banning for the SYN flood attack. However, the SSH brute force test revealed a critical gap — detection without prevention. The system identified the attack but could not stop the authenticated session from being established.
-
-This exercise provided practical insight into the real challenges of host-based intrusion prevention: blocking attacks at the correct stage in the connection lifecycle, the limitations of rate-based detection against evasion techniques like source IP randomization, and the operational importance of monitoring the correct network interface. These findings directly inform the improvements needed in Phase 2 of the GoGuard development roadmap.
+By moving from stateless packet checking to stateful session monitoring, the Blue Team can close these gaps. The insights gained from these tests provide a clear roadmap for Phase 3, with a focus on making GoGuard more resilient against attackers who try to hide their identity or split their malicious payloads.
 
 ---
