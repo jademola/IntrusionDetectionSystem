@@ -118,7 +118,8 @@ src_ip = "192.168.56.x" # Kali IP
 - The attacker's IP was added to the banlist and packets were dropped.
 
 **Evidence**:
-![packet splitting dashboard](./images2/packetSplitting.png)
+![packet splitting dashboard](./images2/packetSplittingV2.png)
+![packet splitting dashboard](./images2/packetSplittingKernel.png)
 
 The dashboard confirmed the fragments were identified as part of a single malicious signature.
 
@@ -181,12 +182,12 @@ target_port = 22
 
 
 **Evidence**:
-![DPI detected dashboard](./images2/spoofingDashboard.png)
+![DPI detected dashboard](./images2/spoofingDashboardV2.png)
 
-![DPI detected kernel](./images2/spoofingKernel.png)
+![DPI detected kernel](./images2/spoofingKernelV2.png)
 
 
-High rate activity successfully detected across all IPs and packets dropped from any Ips identified in the spoof. 
+DPI successfully detected across all IPs and packets dropped from any IPs identified in the spoof. 
 
 ### Analysis:
 The detection worked effectively and the system was still able to use DPI in order to identify malicious packets and IPs. GoGuard was not stressed by packets from multiple IPs.
