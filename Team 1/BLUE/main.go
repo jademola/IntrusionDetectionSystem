@@ -546,9 +546,9 @@ func monitorSystemStats() {
 // 3. The Main Function (The entry point)
 func main() {
 	fmt.Println("GoGuard IPS: Defender Node is starting...")
-	fmt.Println("Interface: enp0s9 (Target)")
+	fmt.Println("Interface: enp0s8 (Target)")
 
-	ifacePtr := flag.String("iface", "enp0s9", "The network interface to sniff on")
+	ifacePtr := flag.String("iface", "enp0s8", "The network interface to sniff on")
 
 	flag.Parse()
 
@@ -631,7 +631,7 @@ func main() {
 
 		// Step 5: Deep Packet Inspection with TCP flow reassembly
 		// Buffers payloads per flow to detect keywords split across packets
-		fmt.Printf("Debug: dst=%s, dstIP=%s, match=%v\n", ip.DstIP.String(), dstIP, ip.DstIP.String()==dstIP)
+		fmt.Printf("Debug: dst=%s, dstIP=%s, match=%v\n", ip.DstIP.String(), dstIP, ip.DstIP.String() == dstIP)
 		if ip.DstIP.String() == dstIP {
 			reassembleAndInspectTCP(packet, src, dstIP, f)
 		}
