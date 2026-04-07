@@ -556,7 +556,7 @@ func main() {
 	snapshotLen := int32(1024)
 	promiscuous := true
 	timeout := 100 * time.Millisecond
-	dstIP := "192.168.56.10" //Change to your Ubuntu IP
+	dstIP := "192.168.56.102" //Change to your Ubuntu IP
 
 	//open device for packet sniffing (local host network, packetsize, promiscuous mode, )
 	handle, err := pcap.OpenLive(device, snapshotLen, promiscuous, timeout)
