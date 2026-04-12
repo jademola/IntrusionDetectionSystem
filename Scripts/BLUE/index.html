@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>GoGuard SOC Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #121212; color: #e0e0e0; margin: 0; padding: 20px; }
+        .header { border-bottom: 2px solid #333; padding-bottom: 10px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }
+        .grid { display: grid; grid-template-columns: 350px 1fr; /* Threat feed on left (small), Chart on right (wide) */ gap: 20px; }
+        canvas {width: 100% !important;height: 400px !important; }
+        .side-panel {display: flex;flex-direction: column;gap: 20px;}
+        .card { background: #1e1e1e; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); border: 1px solid #333; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th { text-align: left; color: #888; border-bottom: 1px solid #333; padding: 10px; }
+        td { padding: 12px 10px; border-bottom: 1px solid #222; font-family: monospace; }
+        /* Specific Alert Styling */
+        .type-DPI_THREAT { color: #ff5252; font-weight: bold; background: rgba(255, 82, 82, 0.15); padding: 2px 8px; border-radius: 4px; border: 1px solid rgba(255, 82, 82, 0.3);}
+        .type-SSH_BRUTE { color: #ffd740; font-weight: bold; background: rgba(255, 215, 64, 0.15); padding: 2px 8px; border-radius: 4px; border: 1px solid rgba(255, 215, 64, 0.3);}
+        .type-FLOOD { color: #ffab40; font-weight: bold; background: rgba(255, 171, 64, 0.15); padding: 2px 8px; border-radius: 4px; border: 1px solid rgba(255, 171, 64, 0.3);}
+        .type-BAN { color: #ffffff; background: #d32f2f; padding: 2px 8px; border-radius: 4px; font-size: 0.85em; text-transform: uppercase; letter-spacing: 1px;}
+        .type-UNBAN {color: #4caf50;font-weight: bold;}
+        .status-online { color: #4caf50; font-size: 0.9em; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>GoGuard SOC <span style="color: #4da6ff;">Defender Node</span></h1>
+        <div class="status-online" id="status">● System Live</div>
+    </div>
+
+    <div class="grid">
+    <div class="side-panel">
+        <div class="card">
+            <h2 style="margin-top:0;">Live Threat Feed</h2>
+            <table id="alertTable">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Alert</th>
+                    </tr>
+                </thead>
+                <tbody id="alertBody"></tbody>
+            </table>
+        </div>
+
+        <div class="card">
+            <h2 style="margin-top:0; color: #ffab40;">Active Bans</h2>
+            <table id="banTable">
+                <thead>
+                    <tr>
+                        <th>IP Address</th>
+                        <th>Expires</th>
+                    </tr>
+                </thead>
+                <tbody id="banBody"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="card">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
+            <h2 style="margin-top:0; margin-bottom:0;">Traffic Throughput</h2>
+            <label for="trafficMode" style="font-size:0.85em; color:#aaa; display:flex; align-items:center; gap:8px;">
+                View
+                <select id="trafficMode" style="background:#121212; color:#e0e0e0; border:1px solid #333; border-radius:6px; padding:4px 8px;">
+                    <option value="total" selected>Total PPS</option>
+                    <option value="perIP">Per-Source-IP PPS</option>
+                </select>
+            </label>
+        </div>
+        <canvas id="trafficChart"></canvas>
+        <p id="trafficHint" style="font-size: 0.8em; color: #666; margin-top: 15px;">Interface: enp0s8 | Total PPS Monitoring Active</p>
+    </div>
+</div>
+
+    <script>
+        // Setup WebSocket connection
+        const socket = new WebSocket("ws://" + window.location.host + "/ws");
+        
+        socket.onopen = () => console.log("Connected to GoGuard Engine");
+        socket.onclose = () => document.getElementById('status').innerHTML = "● System Offline";
+
+
+        function addAlertToTable(alert) {
+            const tbody = document.getElementById("alertBody");
+            const row = tbody.insertRow(0);
+            
+            // Match the alert type to the CSS class
+            const alertClass = `type-${alert.type}`;
+            
+            row.innerHTML = `
+                <td style="font-size: 0.85em; color: #888;">${alert.timestamp}</td>
+                <td><span class="${alertClass}">${alert.message}</span></td>
+            `;
+            
+            // Keep the feed focused on recent events
+            if (tbody.rows.length > 12) tbody.deleteRow(12);
+        }
+
+        // Simple Chart Setup
+        const ctx = document.getElementById('trafficChart').getContext('2d');
+        // Change from 10 to 60 (this represents 60 seconds of history if sampling at 1s)
+        const chartHistory = 60; 
+        const totalDataset = {
+            label: 'Packets Per Second',
+            data: Array(chartHistory).fill(0),
+            borderColor: '#4da6ff',
+            backgroundColor: 'rgba(77, 166, 255, 0.1)', // Slightly lighter fill
+            fill: true,
+            tension: 0.4, // Keep this for the smooth "wave" look
+            pointRadius: 0 // Hide dots for a cleaner "high-res" line
+        };
+
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: Array(chartHistory).fill(''), 
+                datasets: [totalDataset]
+            },
+            options: { 
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false, // CRITICAL: Disable animation for high-frequency updates
+                scales: { 
+                    y: { 
+                        beginAtZero: true,
+                        grid: { color: '#222' } 
+                    }, 
+                    x: { display: false } 
+                },
+                plugins: { legend: { display: false } }
+            }
+        });
+
+        const trafficModeEl = document.getElementById('trafficMode');
+        const trafficHintEl = document.getElementById('trafficHint');
+        let trafficMode = 'total';
+        let perIPDatasets = {};
+
+        trafficModeEl.addEventListener('change', (event) => {
+            trafficMode = event.target.value;
+            if (trafficMode === 'total') {
+                trafficHintEl.textContent = 'Interface: enp0s8 | Total PPS Monitoring Active';
+                switchToTotalDataset();
+            } else {
+                trafficHintEl.textContent = 'Interface: enp0s8 | Per-Source-IP PPS Monitoring Active';
+                switchToPerIPDatasets();
+            }
+            chart.update('none');
+        });
+
+        socket.onmessage = function(event) {
+    const alert = JSON.parse(event.data);
+    
+        if (alert.type === "PULSE") {
+            updateTotalChart(parseInt(alert.message));
+        } else if (alert.type === "PULSE_PER_IP") {
+            updatePerIPChart(alert.series || {});
+        } else if (alert.type === "BAN") {
+            updateBanList(alert.source, alert.timestamp);
+            addAlertToTable(alert); // Also show it in the main feed
+        } else if (alert.type === "UNBAN") {
+            removeIPFromBanList(alert.source);
+        } else {
+            addAlertToTable(alert);
+        }
+    };
+
+        function updateBanList(ip, expires) {
+            const tbody = document.getElementById("banBody");
+            // Check if IP is already there to avoid duplicates
+            if (document.getElementById("ban-" + ip.replace(/\./g, '-'))) return;
+
+            const row = tbody.insertRow();
+            row.id = "ban-" + ip.replace(/\./g, '-'); // Create unique ID for the row
+            row.innerHTML = `
+                <td style="color: #ffab40;">${ip}</td>
+                <td>${expires}</td>
+            `;
+        }
+
+        function removeIPFromBanList(ip) {
+            const row = document.getElementById("ban-" + ip.replace(/\./g, '-'));
+            if (row) row.remove();
+        }
+
+        function updateTotalChart(count) {
+            // Add the new data point
+            totalDataset.data.push(count);
+            
+            // Remove the oldest point to keep the window at 60
+            if (totalDataset.data.length > chartHistory) {
+                totalDataset.data.shift();
+            }
+
+            // Optional: Add a timestamp label for the X-axis (even if hidden)
+            chart.data.labels.push(new Date().toLocaleTimeString());
+            if (chart.data.labels.length > chartHistory) {
+                chart.data.labels.shift();
+            }
+
+            // Use 'none' to render instantly without transition lag
+            if (trafficMode === 'total') {
+                switchToTotalDataset();
+                chart.update('none');
+            }
+        }
+
+        function updatePerIPChart(series) {
+            // Extend known lines with zeros by default, then overwrite if present in this tick.
+            Object.values(perIPDatasets).forEach((dataset) => {
+                dataset.data.push(0);
+                if (dataset.data.length > chartHistory) {
+                    dataset.data.shift();
+                }
+            });
+
+            Object.entries(series).forEach(([ip, count]) => {
+                if (!perIPDatasets[ip]) {
+                    perIPDatasets[ip] = {
+                        label: ip,
+                        data: Array(chartHistory - 1).fill(0).concat(count),
+                        borderColor: colorForKey(ip),
+                        backgroundColor: 'transparent',
+                        fill: false,
+                        tension: 0.25,
+                        pointRadius: 0
+                    };
+                } else {
+                    const data = perIPDatasets[ip].data;
+                    data[data.length - 1] = count;
+                }
+            });
+
+            if (trafficMode === 'perIP') {
+                switchToPerIPDatasets();
+                chart.update('none');
+            }
+        }
+
+        function switchToTotalDataset() {
+            if (chart.data.datasets.length === 1 && chart.data.datasets[0] === totalDataset) {
+                return;
+            }
+            chart.data.datasets = [totalDataset];
+        }
+
+        function switchToPerIPDatasets() {
+            const datasets = Object.values(perIPDatasets);
+            if (datasets.length === 0) {
+                chart.data.datasets = [{
+                    label: 'No active source addresses yet',
+                    data: Array(chartHistory).fill(0),
+                    borderColor: '#555',
+                    backgroundColor: 'transparent',
+                    fill: false,
+                    tension: 0,
+                    pointRadius: 0
+                }];
+                return;
+            }
+            chart.data.datasets = datasets;
+        }
+
+        function colorForKey(key) {
+            let hash = 0;
+            for (let i = 0; i < key.length; i++) {
+                hash = key.charCodeAt(i) + ((hash << 5) - hash);
+            }
+            const hue = Math.abs(hash) % 360;
+            return `hsl(${hue}, 70%, 55%)`;
+        }
+    </script>
+</body>
+</html>
